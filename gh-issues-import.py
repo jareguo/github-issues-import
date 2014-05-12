@@ -508,27 +508,32 @@ def send_request(repo, url, post_data=None, method=None):
 	req.add_header("Authorization", b'Basic ' + auth)
 	req.add_header("Content-Type", "application/json")
 	req.add_header("Accept", "application/json")
-	req.add_header("User-Agent", "spacetelescope/github-issues-import")
+	req.add_header("User-Agent", "jareguo/github-issues-import")
 
-	try:
-		response = urllib.request.urlopen(req)
-		json_data = response.read()
-	except urllib.error.HTTPError as error:
+	retry = True
+	while retry:
+		retry = False
+		try:
+			response = urllib.request.urlopen(req)
+			json_data = response.read()
+		except urllib.error.HTTPError as error:
 
-		error_details = error.read()
-		error_details = json.loads(error_details.decode("utf-8"))
+			error_details = error.read()
+			error_details = json.loads(error_details.decode("utf-8"))
 
-		if error.code in HTTP_ERROR_MESSAGES:
-			sys.exit(HTTP_ERROR_MESSAGES[error.code])
-		else:
-			error_message = ("ERROR: There was a problem importing the "
-							 "issues.\n%s %s" % (error.code, error.reason))
-			if 'message' in error_details:
-				error_message += "\nDETAILS: " + error_details['message']
-			if 'errors' in error_details:
-				error_message += "\n" + str(error_details['errors'])
-			sys.exit(error_message)
-
+			if error.code in HTTP_ERROR_MESSAGES:
+				sys.exit(HTTP_ERROR_MESSAGES[error.code])
+			else:
+				error_message = ("ERROR: There was a problem importing the "
+								 "issues.\n%s %s" % (error.code, error.reason))
+				if 'message' in error_details:
+					error_message += "\nDETAILS: " + error_details['message']
+				if 'errors' in error_details:
+					error_message += "\n" + str(error_details['errors'])
+				sys.exit(error_message)
+		except urllib.error.URLError as error:
+			retry = True
+			
 	return json.loads(json_data.decode("utf-8"))
 
 
