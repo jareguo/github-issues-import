@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 
+import argparse
+import base64
+import configparser
+import datetime
+import getpass
+import json
+import os
 import urllib.request
 import urllib.error
 import urllib.parse
-
-import json
-import base64
-import sys, os
-import datetime
-import argparse
-import configparser
-
-import query
+import sys
 
 from string import Template
+
 
 __location__ = os.path.realpath(os.path.join(os.getcwd(),
                                 os.path.dirname(__file__)))
@@ -239,11 +239,11 @@ def init_config():
         if config.has_option(which, 'username'):
             if config.has_option('login', 'username'):
                 config.set(which, 'username', config.get('login', 'username'))
-            elif which == 'target' and query.yes_no(query_msg_1):
+            elif which == 'target' and yes_no(query_msg_1):
                 config.set('target', 'username',
                            config.get('source', 'username'))
             else:
-                config.set(which, 'username', query.username(query_msg_2))
+                config.set(which, 'username', get_username(query_msg_2))
 
         if not config.has_option(which, 'password'):
             source_username = config.get('source', 'username')
@@ -258,7 +258,7 @@ def init_config():
                 config.set('target', 'password',
                            config.get('source', 'password'))
             else:
-                config.set(which, 'password', query.password(query_msg_3))
+                config.set(which, 'password', get_password(query_msg_3))
 
     get_credentials_for('source')
     get_credentials_for('target')
@@ -518,7 +518,7 @@ def import_issues(issues):
     print(" *", num_new_comments, "new comments")
     print(" *", len(new_milestones), "new milestones")
     print(" *", len(new_labels), "new labels")
-    if not query.yes_no("Are you sure you wish to continue?"):
+    if not yes_no("Are you sure you wish to continue?"):
         sys.exit()
 
     state.current = state.IMPORTING
@@ -557,6 +557,42 @@ def import_issues(issues):
     state.current = state.IMPORT_COMPLETE
 
     return result_issues
+
+
+def get_username(question):
+    # Reserve this are in case I want to prevent special characters etc in the future
+    return input(question)
+
+
+def get_password(question):
+    return getpass.getpass(question)
+
+
+# Taken from http://code.activestate.com/recipes/577058-query-yesno/
+#  with some personal modifications
+def yes_no(question, default=True):
+    choices = {"yes":True, "y":True, "ye":True,
+               "no":False, "n":False }
+
+    if default == None:
+        prompt = " [y/n] "
+    elif default == True:
+        prompt = " [Y/n] "
+    elif default == False:
+        prompt = " [y/N] "
+    else:
+        raise ValueError("invalid default answer: '%s'" % default)
+
+    while 1:
+        sys.stdout.write(question + prompt)
+        choice = input().lower()
+        if default is not None and choice == '':
+            return default
+        elif choice in choices.keys():
+            return choices[choice]
+        else:
+            sys.stdout.write("Please respond with 'yes' or 'no' "\
+                             "(or 'y' or 'n').\n")
 
 
 if __name__ == '__main__':
