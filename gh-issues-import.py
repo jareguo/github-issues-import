@@ -20,6 +20,12 @@ __location__ = os.path.realpath(os.path.join(os.getcwd(),
 default_config_file = os.path.join(__location__, 'config.ini')
 config = configparser.RawConfigParser()
 
+
+# TODO: Do something useful with state management; my thought is to break this
+# into actual stages of the import process where each stage will be in its own
+# function.  A decorator could be used to identify what stage each function
+# represents, and it should be possible to resume the import from any stage
+# (where stages that have already been performed would be converted to no-ops)
 class state:
     current = ""
     INITIALIZING         = "script-initializing"
@@ -159,6 +165,9 @@ def init_config():
             print("Default config file not found in '%s'" % config_file_name)
             print("You may be prompted for some missing settings.")
 
+    # TODO: This config merging could be handled more simply with a
+    # command-line option->config file option mapping; it should also support
+    # boolean values better
     if args.username:
         config.set('login', 'username', args.username)
     if args.password:
@@ -356,8 +365,10 @@ def get_issues_by_state(which, state):
     issues = []
     page = 1
     while True:
+        # TODO: Consider building this into send_request in the form of
+        # optional kwargs or something
         query = urllib.parse.urlencode({'state': state, 'direction': 'asc',
-                                        'page': page}
+                                        'page': page})
         new_issues = send_request(which, 'issues?' + query)
         if not new_issues:
             break
