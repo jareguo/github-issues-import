@@ -236,7 +236,7 @@ def init_config():
                         (config.get(which, 'repository'),
                          config.get(which, 'server')))
 
-        if config.has_option(which, 'username'):
+        if not config.has_option(which, 'username'):
             if config.has_option('login', 'username'):
                 config.set(which, 'username', config.get('login', 'username'))
             elif which == 'target' and yes_no(query_msg_1):
@@ -247,9 +247,10 @@ def init_config():
 
         if not config.has_option(which, 'password'):
             source_username = config.get('source', 'username')
-            target_username = config.get('target', 'username')
             source_server = config.get('source', 'server')
-            target_server = config.get('target', 'server')
+
+            target_username = config.get('target', 'username', fallback=None)
+            target_server = config.get('target', 'server', fallback=None)
 
             if config.has_option('login', 'password'):
                 config.set(which, 'password', config.get('login', 'password'))
