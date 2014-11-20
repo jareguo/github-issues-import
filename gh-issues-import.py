@@ -314,11 +314,11 @@ def send_request(which, url, post_data=None):
     username = config.get(which, 'username')
     password = config.get(which, 'password')
     auth = base64.urlsafe_b64encode(
-            ('Basic %s:%s' % (username, password)).encode('utf-8'))
-    req.add_header("Authorization", auth)
+            ('%s:%s' % (username, password)).encode('utf-8'))
+    req.add_header("Authorization", b'Basic ' + auth)
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
-    req.add_header("User-Agent", "IQAndreas/github-issues-import")
+    req.add_header("User-Agent", "spacetelescope/github-issues-import")
 
     try:
         response = urllib.request.urlopen(req)
