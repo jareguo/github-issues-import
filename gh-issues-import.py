@@ -6,10 +6,11 @@ import configparser
 import getpass
 import json
 import os
+import re
+import sys
 import urllib.request
 import urllib.error
 import urllib.parse
-import sys
 
 from collections import defaultdict, OrderedDict
 from datetime import datetime
@@ -410,13 +411,16 @@ def format_comment(template_data):
     return format_from_template(template, template_data)
 
 
-def send_request(repo, url, post_data=None):
+def send_request(repo, url, post_data=None, method=None):
     if post_data is not None:
         post_data = json.dumps(post_data).encode("utf-8")
 
     repo_url = get_repository_option(repo, 'url')
     full_url = "%s/%s" % (repo_url, url)
     req = urllib.request.Request(full_url, post_data)
+
+    if method is not None:
+        req.method = method
 
     username = get_repository_option(repo, 'username')
     password = get_repository_option(repo, 'password')
@@ -563,7 +567,7 @@ def import_comments(comments, issue_number):
 
 # Will only import milestones and issues that are in use by the imported
 # issues, and do not exist in the target repository
-def import_issues(issues, issue_map):
+def import_issues(issues, issue_map, skipped):
     state.current = state.GENERATING
 
     # TODO: get_milestones and get_labels could simply be modified to return
@@ -588,7 +592,7 @@ def import_issues(issues, issue_map):
     new_milestones = []
     new_labels = []
 
-    for issue in issues:
+    for issue, old_number in zip(issues, issue_map):
         new_issue = {}
         new_issue['title'] = issue['title']
 
@@ -647,7 +651,7 @@ def import_issues(issues, issue_map):
         else:
             new_issue['body'] = format_issue(template_data)
 
-        new_issues.append(new_issue)
+        new_issues.append((old_number, new_issue))
 
     state.current = state.IMPORT_CONFIRMATION
 
@@ -660,6 +664,13 @@ def import_issues(issues, issue_map):
     print(" *", num_new_comments, "new comments")
     print(" *", len(new_milestones), "new milestones")
     print(" *", len(new_labels), "new labels")
+
+    if skipped:
+        print(" *", "The following issues look like they have already been "
+                    "migrated to the target repository by this script:")
+        for issue in skipped:
+            print ("   *", "%s#%s" % (issue['repository'], issue['number']))
+
     if not yes_no("Are you sure you wish to continue?"):
         sys.exit()
 
@@ -674,7 +685,7 @@ def import_issues(issues, issue_map):
         result_label = import_label(label)
 
     result_issues = []
-    for issue in new_issues:
+    for old_number, issue in new_issues:
         if 'milestone_object' in issue:
             issue['milestone'] = issue['milestone_object']['number']
             del issue['milestone_object']
@@ -688,6 +699,18 @@ def import_issues(issues, issue_map):
 
         result_issue = send_request(target, "issues", issue)
         print("Successfully created issue '%s'" % result_issue['title'])
+
+        # Now update the original issue to mention the new issue.
+        source_repo, number = old_number.split('#')
+        orig_issue = get_issue_by_id(source_repo, int(number))
+        message = (
+            '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
+            '(https://github.com/spacetelescope/github-issues-import)*' %
+            (target, result_issue['number']))
+        update = {'body': message + '\n\n' + orig_issue['body']}
+        send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
+        print("Updated original issue with mapping from %s -> %s" %
+              (old_number, issue_map[old_number]))
 
         if 'comments' in issue:
             result_comments = import_comments(issue['comments'],
@@ -761,12 +784,30 @@ if __name__ == '__main__':
     issues.sort(key=lambda i: datetime.strptime(i['created_at'],
                                                 ISO_8601_UTC))
 
+    target = config['global']['target']
+
+    migrated_re = re.compile(
+            r'^\*Migrated to %s#\d+ by.*spacetelescope/github-issues-import' %
+            target)
+    skipped = []
+
+    def filter_migrated(issue):
+        """Filter out issues that look like they have already been migrated."""
+
+        for line in issue['body'].splitlines():
+            if migrated_re.match(line):
+                skipped.append(issue)
+                return False
+
+        return True
+
+    issues = list(filter(filter_migrated, issues))
+
     # Get all issues in the target repository; obviously if issues are created
     # in the target repo before the script is finished running this list will
     # be inaccurate; later we will warn the user to lock down the target (and
     # source) repos before merging in order to prevent this
     # TODO: I wonder if this lockdown could actually be done via the API?
-    target = config['global']['target']
     target_issues = get_issues(target)
     # Annoyingly, the GitHub API does not have a way to ask for a simple count
     # of issues; instead we have to download all the issues in full in order to
@@ -782,6 +823,6 @@ if __name__ == '__main__':
 
     # Further states defined within the function
     # Finally, add these issues to the target repository
-    import_issues(issues, issue_map)
+    import_issues(issues, issue_map, skipped)
 
     state.current = state.COMPLETE
