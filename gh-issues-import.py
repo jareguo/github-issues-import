@@ -23,9 +23,15 @@ DEFAULT_CONFIG_FILE = os.path.join(__location__, 'config.ini')
 
 config = defaultdict(dict)
 
-
+# timestamp format for ISO-8601 timestamps in UTC
 ISO_8601_UTC = '%Y-%m-%dT%H:%M:%SZ'
 
+# Regular expression for matching issue cross-references in GitHub issue and
+# comment text.  I can't find any documentation on GitHub as to what the
+# allowed characters are in repositories and usernames, but this seems like a
+# good-enough guess for now
+GH_ISSUE_REF_RE = re.compile(r'(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[1-9]\d*',
+                             flags=re.I)
 
 # TODO: Do something useful with state management; my thought is to break this
 # into actual stages of the import process where each stage will be in its own
@@ -255,6 +261,17 @@ def init_config():
     if not target:
         sys.exit("ERROR: There is no target repository specified either in "
                  "the config file, or as an argument.")
+
+    # GitHub seems to be case-insensitive wrt username/repository name, so
+    # lowercase all repositories for consistency
+    sources = config['global']['sources'] = [s.lower() for s in sources]
+    target = config['global']['target'] = target.lower()
+
+    for section in list(config):
+        if section.startswith('repository:'):
+            if section.lower() != section:
+                config[section.lower()] = section
+                del config[section]
 
     def get_server_for(repo):
         # Default to 'github.com' if no server is specified
@@ -565,6 +582,43 @@ def import_comments(comments, issue_number):
     return result_comments
 
 
+def fixup_cross_references(source_repo, issue, issue_map):
+    """
+    Before inserting new issues into the target repository, this checks the
+    original issue body for references to other issues in the original
+    repository *or* issues in any of the other source repositories being
+    migrated from.
+
+    This can't reasonably update every existing reference to the original
+    issue, but it can ensure that all issue cross-references made in the new
+    issue are internally consistent.
+    """
+
+    # TODO: This should be done for cross-references in comments as well.
+    def repl_issue_reference(matchobj):
+        """
+        If a matched issue reference is to within the same repository,
+        it is updated to explictly reference the source repository (rather
+        than a 'bare' issue reference like '#42').  However, if the referenced
+        issue is one of the other issues being migrated, then it updates the
+        reference to point to the newly migrated issue.
+        """
+
+        reference = matchobj.group(0)
+        if reference[0] == '#':
+            # A 'bare' reference
+            reference = source_repo + reference
+
+        if reference in issue_map:
+            # Update to reference another issue being migrated to the target
+            # repository
+            reference = '#' + issue_map[reference].split('#')[1]
+
+        return reference
+
+    issue['body'] = GH_ISSUE_REF_RE.sub(repl_issue_reference, issue['body'])
+
+
 # Will only import milestones and issues that are in use by the imported
 # issues, and do not exist in the target repository
 def import_issues(issues, issue_map, skipped):
@@ -636,6 +690,8 @@ def import_issues(issues, issue_map, skipped):
                     known_labels.append(issue_label)
                     # Put it in a queue to add it later
                     new_labels.append(issue_label)
+
+        fixup_cross_references(repo, issue, issue_map)
 
         template_data = {}
         template_data['user_name'] = issue['user']['login']
