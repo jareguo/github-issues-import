@@ -5,7 +5,9 @@ This Python script allows you to import issues and pull requests from one
 repository to another; works even for private repositories, and if the two
 repositories are not related to each other in any way.
 
-Fork of one of the tools by [Max Korenkov](https://github.com/mkorenkov)
+Forked of the script by [Andreas
+Renberg](https://github.com/IQAndreas/github-issues-import) which in turn was a
+fork of one of the tools by [Max Korenkov](https://github.com/mkorenkov)
 separated from its original location at
 [`mokorenkov/tools`](https://github.com/mkorenkov/tools).
 
@@ -101,6 +103,3 @@ details.
 * [**Example pull request**](https://github.com/IQAndreas-testprojects/github-issues-import-example/issues/9) ([original](https://github.com/IQAndreas/github-issues-import/issues/2))
 * [**Example issue with comments**](https://github.com/IQAndreas-testprojects/github-issues-import-example/issues/10) ([original](https://github.com/IQAndreas/github-issues-import/issues/3))
 * [**Example issue with milestone**](https://github.com/IQAndreas-testprojects/github-issues-import-example/issues/11) ([original](https://github.com/IQAndreas/github-issues-import/issues/9))
-
-
-
