@@ -1,15 +1,16 @@
 # Rename to `config.ini`, and keep it in the same folder as `gh-issues-import.py`
 # For a full list of options, see <http://www.iqandreas.com/github-issues-import/configuration/>
+[global]
+sources = OctoCat/Hello-World
+target = OctoDog/HelloWorld
 
-[source]
+[repository:OctoCat/Hello-World]
 server = github.com
-repository = OctoCat/Hello-World
 username = octocat@github.com
 password = plaintext_pa$$w0rd
 
-[target]
+[repository:OctoDog/Hello-World]
 server = octodog.org
-repository = OctoDog/Hello-World
 username = admin@octodog.org
 password = plaintext_pass\/\/ord
 

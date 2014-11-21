@@ -3,7 +3,6 @@
 import argparse
 import base64
 import configparser
-import datetime
 import getpass
 import json
 import os
@@ -12,13 +11,19 @@ import urllib.error
 import urllib.parse
 import sys
 
+from collections import defaultdict, OrderedDict
+from datetime import datetime
 from string import Template
 
 
 __location__ = os.path.realpath(os.path.join(os.getcwd(),
                                 os.path.dirname(__file__)))
-default_config_file = os.path.join(__location__, 'config.ini')
-config = configparser.RawConfigParser()
+DEFAULT_CONFIG_FILE = os.path.join(__location__, 'config.ini')
+
+config = defaultdict(dict)
+
+
+ISO_8601_UTC = '%Y-%m-%dT%H:%M:%SZ'
 
 
 # TODO: Do something useful with state management; my thought is to break this
@@ -54,6 +59,32 @@ HTTP_ERROR_MESSAGES = {
 HTTP_ERROR_MESSAGES[403] = HTTP_ERROR_MESSAGES[401]
 
 
+# Maps command-line options to their associated config file options (if any)
+CONFIG_MAP = {
+    'username': {'section': 'login', 'option': 'username'},
+    'password': {'section': 'login', 'option': 'password'},
+    'sources': {'section': 'global', 'option': 'sources', 'multiple': True},
+    'target': {'section': 'global', 'option': 'target'},
+    'ignore_comments': {'section': 'global', 'option': 'import-comments',
+                        'negate': True},
+    'ignore_milestone': {'section': 'global', 'option': 'import-milestone',
+                         'negate': True},
+    'ignore_labels': {'section': 'global', 'option': 'import-labels',
+                      'negate': True},
+    'import_issues': {'section': 'global', 'option': 'import-issues',
+                      'multiple': True},
+    'issue_template': {'section': 'format', 'option': 'issue-template'},
+    'comment_template': {'section': 'format', 'option': 'comment-template'},
+    'pull_request_template': {'section': 'format',
+                              'option': 'comment-template'}
+}
+
+
+# Set of config option names that take boolean values; the options listed here
+# can either be in the global section, or in per-repository sections
+BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels'])
+
+
 def init_config():
     """
     Handle command-line and config file processing; returns a `dict` of
@@ -61,17 +92,13 @@ def init_config():
     as well as any default values.
     """
 
-    config.add_section('login')
-    config.add_section('source')
-    config.add_section('target')
-    config.add_section('format')
-    config.add_section('settings')
+    config_defaults = {}
 
-    arg_parser = argparse.ArgumentParser(
+    conf_parser = argparse.ArgumentParser(add_help=False,
             description="Import issues from one GitHub repository into "
                         "another.")
 
-    config_group = arg_parser.add_mutually_exclusive_group(required=False)
+    config_group = conf_parser.add_mutually_exclusive_group(required=False)
     config_group.add_argument('--config',
             help="The location of the config file (either absolute, or "
                  "relative to the current working directory). Defaults to "
@@ -84,6 +111,8 @@ def init_config():
                  "as arguments, or (where possible) requested from the user "
                  "as a prompt.")
 
+    arg_parser = argparse.ArgumentParser(parents=[conf_parser])
+
     arg_parser.add_argument('-u', '--username',
             help="The username of the account that will create the new "
                  "issues. The username will not be stored anywhere if "
@@ -94,9 +123,13 @@ def init_config():
                  "create the new issues. The password will not be stored "
                  "anywhere if passed in as an argument.")
 
-    arg_parser.add_argument('-s', '--source',
-            help="The source repository which the issues should be copied "
-                 "from. Should be in the format `user/repository`.")
+    arg_parser.add_argument('-s', '--sources', nargs='+',
+            help="The source repository or repositories from which the "
+                 "issues should be copied.  If given more than one repository "
+                 "the issues are merged from all repositories, and inserted "
+                 "into the target repository in chronological order of their "
+                 "creation.  Each repository should be in the format "
+                 "`user/repository`.")
 
     arg_parser.add_argument('-t', '--target',
             help="The destination repository which the issues should be "
@@ -123,156 +156,232 @@ def init_config():
             help="Specify a template file for use with pull requests.")
 
     include_group = arg_parser.add_mutually_exclusive_group(required=True)
-    include_group.add_argument('--all', dest='import_all',
-            action='store_true',
+    include_group.add_argument('--all', dest='import_issues',
+            action='store_const', const='all',
             help="Import all issues, regardless of state.")
 
-    include_group.add_argument('--open', dest='import_open',
-            action='store_true', help="Import only open issues.")
+    include_group.add_argument('--open', dest='import_issues',
+            action='store_const', const='open',
+            help="Import only open issues.")
 
-    include_group.add_argument('--closed', dest='import_closed',
-            action='store_true', help="Import only closed issues.")
+    include_group.add_argument('--closed', dest='import_issues',
+            action='store_const', const='closed',
+            help="Import only closed issues.")
 
-    include_group.add_argument('-i', '--issues', type=int, nargs='+',
-            help="The list of issues to import.");
+    include_group.add_argument('-i', '--issues', dest='import_issues',
+            type=int, nargs='+', help="The list of issues to import.");
+
+
+    # First parse arguments that affect reading the config files; use this to
+    # set various defaults and then parse the remaining options
+    conf_args, _ = conf_parser.parse_known_args()
+
+    # TODO: This could be simplified even more with smarter use of argparse,
+    # but good enough for now; it's not terribly important that this be
+    # beautiful.
+
+    if conf_args.no_config:
+        print("Ignoring default config file. You may be prompted for some "
+              "missing settings.")
+    else:
+        if conf_args.config:
+            # Read default values out of the config file, if given--these
+            # values may be overridden by command-line options
+            config_file_name = conf_args.config
+            if load_config_file(config_file_name):
+                print("Loaded config options from '%s'" % config_file_name)
+            else:
+                sys.exit("ERROR: Unable to find or open config file '%s'" %
+                         config_file_name)
+        else:
+            config_file_name = DEFAULT_CONFIG_FILE
+            if load_config_file(config_file_name):
+                print("Loaded options from default config file in '%s'" %
+                      config_file_name)
+            else:
+                print("Default config file not found in '%s'" %
+                      config_file_name)
+                print("You may be prompted for some missing settings.")
+
+        # Get global configuration defaults from 'global' and 'login', and
+        # format sections of the config file
+        for argname, config_map in CONFIG_MAP.items():
+            section = config_map['section']
+            option = config_map['option']
+
+            val = config[section].get(option)
+            if val is not None:
+                if config_map.get('multiple'):
+                    # A multiple-value can either be comma-separated or split
+                    # across lines (but not both)
+                    for sep in ('\n', ','):
+                        if sep in val:
+                            val = [v.strip() for v in val.split(sep)
+                                   if v.strip()]
+                            break
+                    else:
+                        val = [val]
+                elif config_map.get('negate'):
+                    val = not val
+                config_defaults[argname] = val
+
+    arg_parser.set_defaults(**config_defaults)
 
     args = arg_parser.parse_args()
 
-    def load_config_file(config_file_name):
-        try:
-            config_file = open(config_file_name)
-            config.read_file(config_file)
-            return True
-        except (FileNotFoundError, IOError):
-            return False
+    # Now load parsed args in to config dict; would be nice if there were a
+    # better way to do this than to loop over CONFIG_MAP a second time.
+    for argname, config_map in CONFIG_MAP.items():
+        section = config_map['section']
+        option = config_map['option']
 
-    if args.no_config:
-        print("Ignoring default config file. You may be prompted for some "
-              "missing settings.")
-    elif args.config:
-        config_file_name = args.config
-        if load_config_file(config_file_name):
-            print("Loaded config options from '%s'" % config_file_name)
-        else:
-            sys.exit("ERROR: Unable to find or open config file '%s'" %
-                     config_file_name)
-    else:
-        config_file_name = default_config_file
-        if load_config_file(config_file_name):
-            print("Loaded options from default config file in '%s'" %
-                  config_file_name)
-        else:
-            print("Default config file not found in '%s'" % config_file_name)
-            print("You may be prompted for some missing settings.")
-
-    # TODO: This config merging could be handled more simply with a
-    # command-line option->config file option mapping; it should also support
-    # boolean values better
-    if args.username:
-        config.set('login', 'username', args.username)
-    if args.password:
-        config.set('login', 'password', args.password)
-
-    if args.source:
-        config.set('source', 'repository', args.source)
-    if args.target:
-        config.set('target', 'repository', args.target)
-
-    if args.issue_template:
-        config.set('format', 'issue_template', args.issue_template)
-    if args.comment_template:
-        config.set('format', 'comment_template', args.comment_template)
-    if args.pull_request_template:
-        config.set('format', 'pull_request_template',
-                   args.pull_request_template)
-
-    config.set('settings', 'import-comments',  str(not args.ignore_comments))
-    config.set('settings', 'import-milestone', str(not args.ignore_milestone))
-    config.set('settings', 'import-labels',    str(not args.ignore_labels))
-
-    config.set('settings', 'import-open-issues',
-               str(args.import_all or args.import_open));
-    config.set('settings', 'import-closed-issues',
-               str(args.import_all or args.import_closed));
-
+        val = getattr(args, argname, None)
+        if hasattr(args, argname) and val is not None:
+            if config_map.get('multiple'):
+                if not isinstance(val, list):
+                    val = [val]
+            elif config_map.get('negate'):
+                val = not val
+            config[section][option] = val
 
     # Make sure no required config values are missing
-    if not config.has_option('source', 'repository') :
-        sys.exit("ERROR: There is no source repository specified either in "
-                 "the config file, or as an argument.")
-    if not config.has_option('target', 'repository') :
+    sources = config['global'].get('sources')
+    target = config['global'].get('target')
+
+    if not sources:
+        sys.exit("ERROR: There are no source repositories specified either in "
+                 "the config file, or as a command-line argument.")
+    if not target:
         sys.exit("ERROR: There is no target repository specified either in "
                  "the config file, or as an argument.")
 
-
-    def get_server_for(which):
+    def get_server_for(repo):
         # Default to 'github.com' if no server is specified
-        if (not config.has_option(which, 'server')):
-            config.set(which, 'server', "github.com")
+        server = get_repository_option(repo, 'server')
+        if server is None:
+            server = 'github.com'
+            set_repository_option(repo, 'server', 'github.com')
 
         # if SOURCE server is not github.com, then assume ENTERPRISE github
         # (yourdomain.com/api/v3...)
-        if (config.get(which, 'server') == "github.com") :
+        if server == "github.com":
             api_url = "https://api.github.com"
         else:
-            api_url = "https://%s/api/v3" % config.get(which, 'server')
+            api_url = "https://%s/api/v3" % server
 
-        repo = config.get(which, 'repository')
-        config.set(which, 'url', "%s/repos/%s" % (api_url, repo))
+        set_repository_option(repo, 'url', '%s/repos/%s' % (api_url, repo))
 
-    get_server_for('source')
-    get_server_for('target')
-
-
-    # TODO: Not sure there's any good reason for this function to be inlined
     # Prompt for username/password if none is provided in either the config or an argument
-    def get_credentials_for(which):
+    def get_credentials_for(repo):
+        server = get_repository_option(repo, 'server')
         query_msg_1 = ("Do you wish to use the same credentials for the "
                        "target repository?")
-        query_msg_2 = ("Entery your username for '%s' at '%s'" %
-                        (config.get(which, 'repository'),
-                         config.get(which, 'server')))
-        query_msg_3 = ("Entery your password for '%s' at '%s'" %
-                        (config.get(which, 'repository'),
-                         config.get(which, 'server')))
+        query_msg_2 = ("Enter your username for '%s' at '%s': " %
+                       (repo, server))
+        query_msg_3 = ("Enter your password for '%s' at '%s': " %
+                       (repo, server))
 
-        if not config.has_option(which, 'username'):
-            if config.has_option('login', 'username'):
-                config.set(which, 'username', config.get('login', 'username'))
-            elif which == 'target' and yes_no(query_msg_1):
-                config.set('target', 'username',
-                           config.get('source', 'username'))
+        if get_repository_option(repo, 'username') is None:
+            if config['login'].get('username'):
+                username = config['login']['username']
+            elif (repo == target and len(sources) == 1 and
+                    yes_no(query_msg_1)):
+                # One target and one source, where credentials for the target
+                # were not supplied--ask to use the same credentials
+                # TODO: In principle we could modify the logic here to take one
+                # set of credentials and ask for each source *and* the target
+                # repos to reuse those credentials, but for now this is just
+                # reproducing the functionality that existed for single-source
+                source = sources[0]
+                username = get_repository_option(source, 'username')
             else:
-                config.set(which, 'username', get_username(query_msg_2))
+                username = get_username(query, msg_2)
 
-        if not config.has_option(which, 'password'):
-            source_username = config.get('source', 'username')
-            source_server = config.get('source', 'server')
+            set_repository_option(repo, 'username', username)
 
-            target_username = config.get('target', 'username', fallback=None)
-            target_server = config.get('target', 'server', fallback=None)
+        if get_repository_option(repo, 'password') is None:
+            # Again, support using the same password as the source, only if
+            # there was a single source
+            # TODO: Again, this logic could be modified to work better across
+            # multiple sources, but it's not a priority right now.
+            if config['login'].get('password'):
+                password = config['login']['password']
+            elif (repo == target and len(sources) == 1):
+                source = sources[0]
+                source_username = get_repository_option(source, 'username')
+                source_server = get_repository_option(source, 'server')
 
-            if config.has_option('login', 'password'):
-                config.set(which, 'password', config.get('login', 'password'))
-            elif (which == 'target' and source_username == target_username and
-                    source_server == target_server):
-                config.set('target', 'password',
-                           config.get('source', 'password'))
+                target_username = get_repository_option(repo, 'username')
+                target_server = get_repository_option(repo, 'server')
+
+                if (repo == target and
+                        source_username == target_username and
+                        source_server == target_server):
+                    password = get_repository_option(source, 'password')
+                else:
+                    password = get_password(query_msg_3)
             else:
-                config.set(which, 'password', get_password(query_msg_3))
+                password = get_password(query_msg_3)
 
-    get_credentials_for('source')
-    get_credentials_for('target')
+            set_repository_option(repo, 'password', password)
+
+    for repo in sources + [target]:
+        get_server_for(repo)
+        get_credentials_for(repo)
 
     # Everything is here! Continue on our merry way...
-    return args.issues or []
+
+
+def load_config_file(config_file_name):
+    global config  # global statement not strictly needed; just informational
+
+    cfg = configparser.ConfigParser()
+    try:
+        with open(config_file_name) as f:
+            cfg.read_file(f)
+
+        for section in cfg.sections():
+            for option in cfg.options(section):
+                if ((section == 'global' or
+                        section.startswith('repository:')) and
+                     option in BOOLEAN_OPTS):
+                    config[section][option] = cfg.getboolean(section, option)
+                else:
+                    config[section][option] = cfg.get(section, option)
+
+        return True
+    except (FileNotFoundError, IOError, configparser.Error):
+        return False
+
+
+def get_repository_option(repo, option, default=None):
+    """
+    Looks up per-repository options in the configuration; if not found it just
+    returns the global setting from the [global] config section.
+
+    Note, there are some repository-specific options (namely 'url') that should
+    *only* appear in repository-specific config sections.
+    """
+
+    repo_sect = 'repository:' + repo
+    if repo_sect in config and option in config[repo_sect]:
+        section = repo_sect
+    else:
+        section = 'global'
+
+    return config[section].get(option, default)
+
+
+def set_repository_option(repo, option, value):
+    """Sets a repository-specific option in the config."""
+
+    config['repository:' + repo][option] = value
 
 
 def format_date(datestring):
     # The date comes from the API in ISO-8601 format
-    date = datetime.datetime.strptime(datestring, "%Y-%m-%dT%H:%M:%SZ")
-    date_format = config.get('format', 'date',
-                             fallback='%A %b %d, %Y at %H:%M GMT', raw=True);
+    date = datetime.strptime(datestring, ISO_8601_UTC)
+    date_format = config['format'].get('date', '%A %b %d, %Y at %H:%M GMT')
     return date.strftime(date_format)
 
 
@@ -284,35 +393,33 @@ def format_from_template(template_filename, template_data):
 
 def format_issue(template_data):
     default_template = os.path.join(__location__, 'templates', 'issue.md')
-    template = config.get('format', 'issue_template',
-                          fallback=default_template)
+    template = config['format'].get('issue-template', default_template)
     return format_from_template(template, template_data)
 
 
 def format_pull_request(template_data):
     default_template = os.path.join(__location__, 'templates',
                                     'pull_request.md')
-    template = config.get('format', 'pull_request_template',
-                          fallback=default_template)
+    template = config['format'].get('pull_request_template', default_template)
     return format_from_template(template, template_data)
 
 
 def format_comment(template_data):
     default_template = os.path.join(__location__, 'templates', 'comment.md')
-    template = config.get('format', 'comment_template',
-                          fallback=default_template)
+    template = config['format'].get('comment_template', default_template)
     return format_from_template(template, template_data)
 
 
-def send_request(which, url, post_data=None):
+def send_request(repo, url, post_data=None):
     if post_data is not None:
         post_data = json.dumps(post_data).encode("utf-8")
 
-    full_url = "%s/%s" % (config.get(which, 'url'), url)
+    repo_url = get_repository_option(repo, 'url')
+    full_url = "%s/%s" % (repo_url, url)
     req = urllib.request.Request(full_url, post_data)
 
-    username = config.get(which, 'username')
-    password = config.get(which, 'password')
+    username = get_repository_option(repo, 'username')
+    password = get_repository_option(repo, 'password')
     auth = base64.urlsafe_b64encode(
             ('%s:%s' % (username, password)).encode('utf-8'))
     req.add_header("Authorization", b'Basic ' + auth)
@@ -340,47 +447,68 @@ def send_request(which, url, post_data=None):
     return json.loads(json_data.decode("utf-8"))
 
 
-def get_milestones(which):
-    return send_request(which, "milestones?state=open")
+def get_milestones(repo):
+    """Get all open milestones for repository."""
+
+    return send_request(repo, "milestones?state=open")
 
 
-def get_labels(which):
-    return send_request(which, "labels")
+def get_labels(repo):
+    """Get all labels for repository."""
+
+    return send_request(repo, "labels")
 
 
-def get_issue_by_id(which, issue_id):
-    return send_request(which, "issues/%d" % issue_id)
+def get_issue_by_id(repo, issue_id):
+    """Get single issue from repository."""
+
+    issue = send_request(repo, "issues/%d" % issue_id)
+    issue['repository'] = repo
+    return issue
 
 
-def get_issues_by_id(which, issue_ids):
-    # Populate issues based on issue IDs
-    issues = []
-    for issue_id in issue_ids:
-        issues.append(get_issue_by_id(which, int(issue_id)))
+def get_issues_by_id(repo, issue_ids):
+    """Get list of issues from repository for multiple issue numbers."""
 
-    return issues
+    return [get_issue_by_id(repo, int(issue_id)) for issue_id in issue_ids]
 
 
-# Allowed values for state are 'open' and 'closed'
-def get_issues_by_state(which, state):
+def get_issues(repo, state=None):
+    """
+    Get all issues from repository.
+
+    Optionally, only retrieve issues of in the specified state ('open' or
+    'closed')."""
+
     issues = []
     page = 1
     while True:
+        query_args = {'direction': 'asc', 'page': page}
+        if state in ('open', 'closed'):
+            query_args['state'] = state
+
         # TODO: Consider building this into send_request in the form of
         # optional kwargs or something
-        query = urllib.parse.urlencode({'state': state, 'direction': 'asc',
-                                        'page': page})
-        new_issues = send_request(which, 'issues?' + query)
+        query = urllib.parse.urlencode(query_args)
+        new_issues = send_request(repo, 'issues?' + query)
         if not new_issues:
             break
+
+        # Add a 'repository' key to each issue; although this information can
+        # be gleaned from the issue data it's easier to include here explicitly
+        for issue in new_issues:
+            issue['repository'] = repo
+
         issues.extend(new_issues)
         page += 1
     return issues
 
 
-def get_comments_on_issue(which, issue):
+def get_comments_on_issue(repo, issue):
+    """Get all comments on an issue in the specified repository."""
+
     if issue['comments'] != 0:
-        return send_request(which, "issues/%s/comments" % issue['number'])
+        return send_request(repo, "issues/%s/comments" % issue['number'])
     else :
         return []
 
@@ -393,7 +521,8 @@ def import_milestone(source):
         "due_on": source['due_on']
     }
 
-    result_milestone = send_request('target', "milestones", source)
+    target = config['global']['target']
+    result_milestone = send_request(target, "milestones", source)
     print("Successfully created milestone '%s'" % result_milestone['title'])
     return result_milestone
 
@@ -404,7 +533,8 @@ def import_label(source):
         "color": source['color']
     }
 
-    result_label = send_request('target', "labels", source)
+    target = config['global']['target']
+    result_label = send_request(target, "labels", source)
     print("Successfully created label '%s'" % result_label['name'])
     return result_label
 
@@ -423,7 +553,8 @@ def import_comments(comments, issue_number):
 
         comment['body'] = format_comment(template_data)
 
-        result_comment = send_request('target', "issues/%s/comments" %
+        target = config['global']['target']
+        result_comment = send_request(target, "issues/%s/comments" %
                                       issue_number, comment)
         result_comments.append(result_comment)
 
@@ -432,19 +563,24 @@ def import_comments(comments, issue_number):
 
 # Will only import milestones and issues that are in use by the imported
 # issues, and do not exist in the target repository
-def import_issues(issues):
+def import_issues(issues, issue_map):
     state.current = state.GENERATING
 
-    known_milestones = get_milestones('target')
+    # TODO: get_milestones and get_labels could simply be modified to return
+    # mappings keyed on the names in the first place; this would be more useful
+    target = config['global']['target']
+    known_milestones = get_milestones(target)
     def get_milestone_by_title(title):
         for milestone in known_milestones:
-            if milestone['title'] == title : return milestone
+            if milestone['title'] == title:
+                return milestone
         return None
 
-    known_labels = get_labels('target')
+    known_labels = get_labels(target)
     def get_label_by_name(name):
         for label in known_labels:
-            if label['name'] == name : return label
+            if label['name'] == name:
+                return label
         return None
 
     new_issues = []
@@ -460,12 +596,14 @@ def import_issues(issues):
         if issue['closed_at']:
             new_issue['title'] = "[CLOSED] " + new_issue['title']
 
-        import_comments = config.getboolean('settings', 'import-comments')
+        repo = issue['repository']
+
+        import_comments = get_repository_option(repo, 'import-comments')
         if import_comments and issue.get('comments', 0) != 0:
             num_new_comments += int(issue['comments'])
             new_issue['comments'] = get_comments_on_issue('source', issue)
 
-        import_milestone = config.getboolean('settings', 'import-milestone')
+        import_milestone = get_repository_option(repo, 'import-milestone')
         if import_milestone and issue.get('milestone') is not None:
             # Since the milestones' ids are going to differ, we will compare
             # them by title instead
@@ -481,7 +619,7 @@ def import_issues(issues):
                 # Put it in a queue to add it later
                 new_milestones.append(new_milestone)
 
-        import_labels = config.getboolean('settings', 'import-labels')
+        import_labels = get_repository_option(repo, 'import-labels')
         if import_labels and issue.get('labels') is not None:
             new_issue['label_objects'] = []
             for issue_label in issue['labels']:
@@ -513,9 +651,12 @@ def import_issues(issues):
 
     state.current = state.IMPORT_CONFIRMATION
 
-    print("You are about to add to '%s':" %
-            config.get('target', 'repository'))
-    print(" *", len(new_issues), "new issues")
+    print("You are about to add to '%s':" % target)
+    print(" *", len(new_issues), "new issues:")
+
+    for old, new in issue_map.items():
+        print("   *", old, "->", new)
+
     print(" *", num_new_comments, "new comments")
     print(" *", len(new_milestones), "new milestones")
     print(" *", len(new_labels), "new labels")
@@ -545,7 +686,7 @@ def import_issues(issues):
             issue['labels'] = issue_labels
             del issue['label_objects']
 
-        result_issue = send_request('target', "issues", issue)
+        result_issue = send_request(target, "issues", issue)
         print("Successfully created issue '%s'" % result_issue['title'])
 
         if 'comments' in issue:
@@ -600,28 +741,47 @@ if __name__ == '__main__':
 
     state.current = state.LOADING_CONFIG
 
-    issue_ids = init_config()
-    issues = []
+    init_config()
 
     state.current = state.FETCHING_ISSUES
 
     # Argparser will prevent us from getting both issue ids and specifying
     # issue state, so no duplicates will be added
-    if (len(issue_ids) > 0):
-        issues += get_issues_by_id('source', issue_ids)
+    issues = []
+    for repo in config['global']['sources']:
+        issues_to_import = get_repository_option(repo, 'import-issues')
 
-    if config.getboolean('settings', 'import-open-issues'):
-        issues += get_issues_by_state('source', 'open')
+        if (len(issues_to_import) == 1 and
+                issues_to_import[0] in ('all', 'open', 'closed')):
+            issues += get_issues(repo, state=issues_to_import[0])
+        else:
+            issues += get_issues_by_id(repo, issues_to_import)
 
-    if config.getboolean('settings', 'import-closed-issues'):
-        issues += get_issues_by_state('source', 'closed')
+    # Sort issues from all repositories chronologically
+    issues.sort(key=lambda i: datetime.strptime(i['created_at'],
+                                                ISO_8601_UTC))
 
-    # Sort issues based on their original `id` field
-    # Confusing, but taken from http://stackoverflow.com/a/2878123/617937
-    issues.sort(key=lambda x:x['number'])
+    # Get all issues in the target repository; obviously if issues are created
+    # in the target repo before the script is finished running this list will
+    # be inaccurate; later we will warn the user to lock down the target (and
+    # source) repos before merging in order to prevent this
+    # TODO: I wonder if this lockdown could actually be done via the API?
+    target = config['global']['target']
+    target_issues = get_issues(target)
+    # Annoyingly, the GitHub API does not have a way to ask for a simple count
+    # of issues; instead we have to download all the issues in full in order to
+    # count them
+
+    # Create a map from issues in the source repositories to the issues they
+    # will become in the new repository
+    issue_map = OrderedDict()
+    for idx, issue in enumerate(issues):
+        old = '%s#%s' % (issue['repository'], issue['number'])
+        new = '%s#%s' % (target, len(target_issues) + idx + 1)
+        issue_map[old] = new
 
     # Further states defined within the function
     # Finally, add these issues to the target repository
-    import_issues(issues)
+    import_issues(issues, issue_map)
 
     state.current = state.COMPLETE
