@@ -78,6 +78,7 @@ CONFIG_MAP = {
                          'negate': True},
     'ignore_labels': {'section': 'global', 'option': 'import-labels',
                       'negate': True},
+    'close_issues': {'section': 'global', 'option': 'close-issues'},
     'import_issues': {'section': 'global', 'option': 'import-issues',
                       'multiple': True},
     'issue_template': {'section': 'format', 'option': 'issue-template'},
@@ -89,7 +90,8 @@ CONFIG_MAP = {
 
 # Set of config option names that take boolean values; the options listed here
 # can either be in the global section, or in per-repository sections
-BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels'])
+BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels',
+                    'close-issues'])
 
 
 def init_config():
@@ -152,6 +154,10 @@ def init_config():
     arg_parser.add_argument('--ignore-labels', dest='ignore_labels',
             action='store_true',
             help="Do not import labels attached to the issue.")
+
+    arg_parser.add_argument('--close-issues', dest='close_issues',
+            action='store_true',
+            help="Close original issues after they have been migrated.")
 
     arg_parser.add_argument('--issue-template',
             help="Specify a template file for use with issues.")
@@ -754,16 +760,29 @@ def import_issues(issues, issue_map, skipped):
             del issue['label_objects']
 
         result_issue = send_request(target, "issues", issue)
-        print("Successfully created issue '%s'" % result_issue['title'])
+
+        source_repo, number = old_number.split('#')
+        close_issue = get_repository_option(source_repo, 'close-issues')
+
+        if close_issue:
+            close_message = '; the original issue will be closed'
+        else:
+            close_message = ''
+
+        print("Successfully created issue '%s'%s" % (result_issue['title'],
+                                                     close_message))
 
         # Now update the original issue to mention the new issue.
-        source_repo, number = old_number.split('#')
         orig_issue = get_issue_by_id(source_repo, int(number))
         message = (
             '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
             '(https://github.com/spacetelescope/github-issues-import)*' %
             (target, result_issue['number']))
         update = {'body': message + '\n\n' + orig_issue['body']}
+
+        if close_issue:
+            update['state'] = 'closed'
+
         send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
         print("Updated original issue with mapping from %s -> %s" %
               (old_number, issue_map[old_number]))
