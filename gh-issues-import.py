@@ -81,6 +81,7 @@ CONFIG_MAP = {
     'close_issues': {'section': 'global', 'option': 'close-issues'},
     'import_issues': {'section': 'global', 'option': 'import-issues',
                       'multiple': True},
+    'normalize_labels': {'section': 'global', 'option': 'normalize-labels'},
     'issue_template': {'section': 'format', 'option': 'issue-template'},
     'comment_template': {'section': 'format', 'option': 'comment-template'},
     'pull_request_template': {'section': 'format',
@@ -91,7 +92,7 @@ CONFIG_MAP = {
 # Set of config option names that take boolean values; the options listed here
 # can either be in the global section, or in per-repository sections
 BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels',
-                    'close-issues'])
+                    'close-issues', 'normalize-labels'])
 
 
 def init_config():
@@ -167,6 +168,11 @@ def init_config():
 
     arg_parser.add_argument('--pull-request-template',
             help="Specify a template file for use with pull requests.")
+
+    arg_parser.add_argument('--normalize-labels', action='store_true',
+            help="When creating new labels and merging with existing labels "
+                 "normalize the label names by setting them to all lowercase "
+                 "and replacing all whitespace with a single hyphen.")
 
     include_group = arg_parser.add_mutually_exclusive_group(required=True)
     include_group.add_argument('--all', dest='import_issues',
@@ -402,6 +408,15 @@ def set_repository_option(repo, option, value):
     config['repository:' + repo][option] = value
 
 
+def normalize_label_name(label):
+    """
+    Lowercases a label name and replaces all whitespace with hyphens.
+    """
+
+    label = label.lower()
+    return re.sub(r'\s+', '-', label)
+
+
 def format_date(datestring):
     # The date comes from the API in ISO-8601 format
     date = datetime.strptime(datestring, ISO_8601_UTC)
@@ -475,15 +490,36 @@ def send_request(repo, url, post_data=None, method=None):
 
 
 def get_milestones(repo):
-    """Get all open milestones for repository."""
+    """
+    Get all open milestones for repository.
 
-    return send_request(repo, "milestones?state=open")
+    Returns an `OrderedDict` keyed on the milestone title.
+    """
+
+    milestones = send_request(repo, "milestones?state=open")
+    return OrderedDict((m['title'], m) for m in milestones)
 
 
 def get_labels(repo):
-    """Get all labels for repository."""
+    """
+    Get all labels for repository.
 
-    return send_request(repo, "labels")
+    Returns an `OrderedDict` keyed on label names.  If normalize-labels was
+    specified in the configuration, this also normalizes all label names and
+    ignores their original spellings.
+    """
+
+    normalize = get_repository_option(repo, 'normalize-labels')
+    labels = send_request(repo, "labels")
+    labels_dict = OrderedDict()
+    for label in labels:
+        if normalize:
+            name = normalize_label_name(label['name'])
+        else:
+            name = label['name']
+
+        labels_dict[name] = label
+    return labels_dict
 
 
 def get_issue_by_id(repo, issue_id):
@@ -630,22 +666,9 @@ def fixup_cross_references(source_repo, issue, issue_map):
 def import_issues(issues, issue_map, skipped):
     state.current = state.GENERATING
 
-    # TODO: get_milestones and get_labels could simply be modified to return
-    # mappings keyed on the names in the first place; this would be more useful
     target = config['global']['target']
     known_milestones = get_milestones(target)
-    def get_milestone_by_title(title):
-        for milestone in known_milestones:
-            if milestone['title'] == title:
-                return milestone
-        return None
-
     known_labels = get_labels(target)
-    def get_label_by_name(name):
-        for label in known_labels:
-            if label['name'] == name:
-                return label
-        return None
 
     new_issues = []
     num_new_comments = 0
@@ -672,28 +695,32 @@ def import_issues(issues, issue_map, skipped):
             # Since the milestones' ids are going to differ, we will compare
             # them by title instead
             milestone_title = issue['milestone']['title']
-            found_milestone = get_milestone_by_title(milestone_title)
+            found_milestone = known_milestones.get(milestone_title)
             if found_milestone:
                 new_issue['milestone_object'] = found_milestone
             else:
                 new_milestone = issue['milestone']
                 new_issue['milestone_object'] = new_milestone
                 # Allow it to be found next time
-                known_milestones.append(new_milestone)
+                known_milestones[new_milestone['title']] = new_milestone
                 # Put it in a queue to add it later
                 new_milestones.append(new_milestone)
 
         import_labels = get_repository_option(repo, 'import-labels')
+        normalize_labels = get_repository_option(repo, 'normalize-labels')
         if import_labels and issue.get('labels') is not None:
             new_issue['label_objects'] = []
             for issue_label in issue['labels']:
-                found_label = get_label_by_name(issue_label['name'])
+                if normalize_labels:
+                    issue_label['name'] = \
+                            normalize_label_name(issue_label['name'])
+                found_label = known_labels.get(issue_label['name'])
                 if found_label:
                     new_issue['label_objects'].append(found_label)
                 else:
                     new_issue['label_objects'].append(issue_label)
                     # Allow it to be found next time
-                    known_labels.append(issue_label)
+                    known_labels[issue_label['name']] = issue_label
                     # Put it in a queue to add it later
                     new_labels.append(issue_label)
 
