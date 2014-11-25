@@ -325,7 +325,7 @@ def init_config():
                 source = sources[0]
                 username = get_repository_option(source, 'username')
             else:
-                username = get_username(query, msg_2)
+                username = get_username(query_msg_2)
 
             set_repository_option(repo, 'username', username)
 
