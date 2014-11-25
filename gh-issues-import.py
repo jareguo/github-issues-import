@@ -78,6 +78,8 @@ CONFIG_MAP = {
                          'negate': True},
     'ignore_labels': {'section': 'global', 'option': 'import-labels',
                       'negate': True},
+    'ignore_assignee': {'section': 'global', 'option': 'import-assignee',
+                        'negate': True},
     'no_backrefs': {'section': 'global', 'option': 'create-backrefs',
                     'negate': True},
     'close_issues': {'section': 'global', 'option': 'close-issues'},
@@ -94,7 +96,8 @@ CONFIG_MAP = {
 # Set of config option names that take boolean values; the options listed here
 # can either be in the global section, or in per-repository sections
 BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels',
-                    'create-backrefs', 'close-issues', 'normalize-labels'])
+                    'import-assignee', 'create-backrefs', 'close-issues',
+                    'normalize-labels'])
 
 
 def init_config():
@@ -157,6 +160,10 @@ def init_config():
     arg_parser.add_argument('--ignore-labels', dest='ignore_labels',
             action='store_true',
             help="Do not import labels attached to the issue.")
+
+    arg_parser.add_argument('--ignore-assignee', dest='ignore_assignee',
+            action='store_true',
+            help="Do not import the assignee to the issue.")
 
     arg_parser.add_argument('--no-backrefs', dest='no_backrefs',
             action='store_true',
@@ -692,6 +699,10 @@ def import_issues(issues, issue_map, skipped):
             new_issue['title'] = "[CLOSED] " + new_issue['title']
 
         repo = issue['repository']
+
+        import_assignee = get_repository_option(repo, 'import-assignee')
+        if import_assignee and issue.get('assignee'):
+            new_issue['assignee'] = issue['assignee']['login']
 
         import_comments = get_repository_option(repo, 'import-comments')
         if import_comments and issue.get('comments', 0) != 0:
