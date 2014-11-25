@@ -696,7 +696,7 @@ def import_issues(issues, issue_map, skipped):
         import_comments = get_repository_option(repo, 'import-comments')
         if import_comments and issue.get('comments', 0) != 0:
             num_new_comments += int(issue['comments'])
-            new_issue['comments'] = get_comments_on_issue('source', issue)
+            new_issue['comments'] = get_comments_on_issue(repo, issue)
 
         import_milestone = get_repository_option(repo, 'import-milestone')
         if import_milestone and issue.get('milestone') is not None:
