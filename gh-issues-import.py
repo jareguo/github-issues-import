@@ -78,6 +78,8 @@ CONFIG_MAP = {
                          'negate': True},
     'ignore_labels': {'section': 'global', 'option': 'import-labels',
                       'negate': True},
+    'no_backrefs': {'section': 'global', 'option': 'create-backrefs',
+                    'negate': True},
     'close_issues': {'section': 'global', 'option': 'close-issues'},
     'import_issues': {'section': 'global', 'option': 'import-issues',
                       'multiple': True},
@@ -92,7 +94,7 @@ CONFIG_MAP = {
 # Set of config option names that take boolean values; the options listed here
 # can either be in the global section, or in per-repository sections
 BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels',
-                    'close-issues', 'normalize-labels'])
+                    'create-backrefs', 'close-issues', 'normalize-labels'])
 
 
 def init_config():
@@ -155,6 +157,12 @@ def init_config():
     arg_parser.add_argument('--ignore-labels', dest='ignore_labels',
             action='store_true',
             help="Do not import labels attached to the issue.")
+
+    arg_parser.add_argument('--no-backrefs', dest='no_backrefs',
+            action='store_true',
+            help="Do not reference original issues in migrated issues; "
+                 "migrated issues will appear as though they were newly "
+                 "created.")
 
     arg_parser.add_argument('--close-issues', dest='close_issues',
             action='store_true',
@@ -734,11 +742,14 @@ def import_issues(issues, issue_map, skipped):
         template_data['url'] =  issue['html_url']
         template_data['body'] = issue['body']
 
-        if ("pull_request" in issue and
-                issue['pull_request']['html_url'] is not None):
-            new_issue['body'] = format_pull_request(template_data)
+        if get_repository_option(repo, 'create-backrefs'):
+            if ("pull_request" in issue and
+                    issue['pull_request']['html_url'] is not None):
+                new_issue['body'] = format_pull_request(template_data)
+            else:
+                new_issue['body'] = format_issue(template_data)
         else:
-            new_issue['body'] = format_issue(template_data)
+            new_issue['body'] = issue['body']
 
         new_issues.append((old_number, new_issue))
 
@@ -800,12 +811,15 @@ def import_issues(issues, issue_map, skipped):
                                                      close_message))
 
         # Now update the original issue to mention the new issue.
-        orig_issue = get_issue_by_id(source_repo, int(number))
-        message = (
-            '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
-            '(https://github.com/spacetelescope/github-issues-import)*' %
-            (target, result_issue['number']))
-        update = {'body': message + '\n\n' + orig_issue['body']}
+        update = {}
+
+        if get_repository_option(source_repo, 'create-backrefs'):
+            orig_issue = get_issue_by_id(source_repo, int(number))
+            message = (
+                '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
+                '(https://github.com/spacetelescope/github-issues-import)*' %
+                (target, result_issue['number']))
+            update['body'] = message + '\n\n' + orig_issue['body']
 
         if close_issue:
             update['state'] = 'closed'
