@@ -704,9 +704,10 @@ def import_issues(issues, issue_map, skipped):
         if import_assignee and issue.get('assignee'):
             new_issue['assignee'] = issue['assignee']['login']
 
-        import_comments = get_repository_option(repo, 'import-comments')
-        if import_comments and issue.get('comments', 0) != 0:
-            num_new_comments += int(issue['comments'])
+        import_commjnts = get_repository_option(repo, 'import-comments')
+        num_comments = int(issue.get('comments', 0))
+        if import_comments and num_comments != 0:
+            num_new_comments += num_comments
             new_issue['comments'] = get_comments_on_issue(repo, issue)
 
         import_milestone = get_repository_option(repo, 'import-milestone')
@@ -752,6 +753,7 @@ def import_issues(issues, issue_map, skipped):
         template_data['date'] = format_date(issue['created_at'])
         template_data['url'] =  issue['html_url']
         template_data['body'] = issue['body']
+        template_data['num_comments'] = num_comments
 
         if get_repository_option(repo, 'create-backrefs'):
             if ("pull_request" in issue and
