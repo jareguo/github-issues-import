@@ -704,9 +704,9 @@ def import_issues(issues, issue_map, skipped):
         if import_assignee and issue.get('assignee'):
             new_issue['assignee'] = issue['assignee']['login']
 
-        import_commjnts = get_repository_option(repo, 'import-comments')
         num_comments = int(issue.get('comments', 0))
-        if import_comments and num_comments != 0:
+        if (get_repository_option(repo, 'import-comments') and
+                num_comments != 0):
             num_new_comments += num_comments
             new_issue['comments'] = get_comments_on_issue(repo, issue)
 
