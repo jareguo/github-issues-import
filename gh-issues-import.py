@@ -627,18 +627,20 @@ def import_label(source):
     return result_label
 
 
-def import_comments(orig_issue_id, comments, issue_number):
+def import_comments(orig_issue_id, comments, issue_number, issue_map):
     result_comments = []
     source_repo = orig_issue_id.repository
 
     for comment in comments:
+        body = fixup_cross_references(comment['body'], source_repo, issue_map)
+
         template_data = {}
         template_data['user_name'] = comment['user']['login']
         template_data['user_url'] = comment['user']['html_url']
         template_data['user_avatar'] = comment['user']['avatar_url']
         template_data['date'] = format_date(comment['created_at'])
         template_data['url'] =  comment['html_url']
-        template_data['body'] = comment['body']
+        template_data['body'] = body
 
         new_comment = {'body': format_comment(template_data)}
 
@@ -664,7 +666,7 @@ def import_comments(orig_issue_id, comments, issue_number):
     return result_comments
 
 
-def fixup_cross_references(source_repo, issue, issue_map):
+def fixup_cross_references(text, source_repo, issue_map):
     """
     Before inserting new issues into the target repository, this checks the
     original issue body for references to other issues in the original
@@ -674,9 +676,10 @@ def fixup_cross_references(source_repo, issue, issue_map):
     This can't reasonably update every existing reference to the original
     issue, but it can ensure that all issue cross-references made in the new
     issue are internally consistent.
+
+    This can also be used to update cross references in comments.
     """
 
-    # TODO: This should be done for cross-references in comments as well.
     def repl_issue_reference(matchobj):
         """
         If a matched issue reference is to within the same repository,
@@ -694,14 +697,14 @@ def fixup_cross_references(source_repo, issue, issue_map):
         if issue in issue_map:
             # Update to reference another issue being migrated to the target
             # repository
-            return '#' + issue_map[issue][1]
+            return '#' + str(issue_map[issue][1])
         else:
             return str(issue)
 
-    issue['body'] = GH_ISSUE_REF_RE.sub(repl_issue_reference, issue['body'])
+    return GH_ISSUE_REF_RE.sub(repl_issue_reference, text)
 
 
-def import_new_issue(new_issue):
+def import_new_issue(new_issue, issue_map):
     """
     Perform actual migration of new issues, including updates to the original
     source issue.
@@ -755,7 +758,7 @@ def import_new_issue(new_issue):
 
     if 'comments' in new_issue:
         result_comments = import_comments(old_issue, new_issue['comments'],
-                                          result_issue['number'])
+                                          result_issue['number'], issue_map)
         print(" > Successfully added", len(result_comments), "comments.")
 
     # Return value is currently used only for debugging
@@ -804,7 +807,8 @@ def make_new_issue(orig_issue_id, orig_issue, issue_map):
 
             new_issue['label_objects'].append(issue_label)
 
-    fixup_cross_references(repo, orig_issue, issue_map)
+    orig_issue['body'] = fixup_cross_references(orig_issue['body'], repo,
+                                                issue_map)
 
     template_data = {}
     template_data['user_name'] = orig_issue['user']['login']
@@ -908,7 +912,7 @@ def import_issues(issues, issue_map):
         result_label = import_label(label)
 
     for new_issue in new_issues:
-        result_issue = import_new_issue(new_issue)
+        result_issue = import_new_issue(new_issue, issue_map)
 
     state.current = state.IMPORT_COMPLETE
 
