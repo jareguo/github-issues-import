@@ -686,6 +686,65 @@ def fixup_cross_references(source_repo, issue, issue_map):
     issue['body'] = GH_ISSUE_REF_RE.sub(repl_issue_reference, issue['body'])
 
 
+def import_new_issue(new_issue):
+    """
+    Perform actual migration of new issues, including updates to the original
+    source issue.
+    """
+
+    old_issue = new_issue['origin']
+
+    if 'milestone_object' in new_issue:
+        new_issue['milestone'] = new_issue['milestone_object']['number']
+        del issue['milestone_object']
+
+    if 'label_objects' in new_issue:
+        issue_labels = []
+        for label in new_issue['label_objects']:
+            issue_labels.append(label['name'])
+        new_issue['labels'] = issue_labels
+        del new_issue['label_objects']
+
+    result_issue = send_request(target, "issues", new_issue)
+
+    source_repo, number = old_issue
+    close_issue = get_repository_option(source_repo, 'close-issues')
+
+    if close_issue:
+        close_message = '; the original issue will be closed'
+    else:
+        close_message = ''
+
+    print("Successfully created issue '%s'%s" % (result_issue['title'],
+                                                 close_message))
+
+    # Now update the original issue to mention the new issue.
+    update = {}
+
+    if get_repository_option(source_repo, 'create-backrefs'):
+        orig_issue = get_issue_by_id(source_repo, int(number))
+        message = (
+            '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
+            '(https://github.com/spacetelescope/github-issues-import)*' %
+            (target, result_issue['number']))
+        update['body'] = message + '\n\n' + orig_issue['body']
+
+    if close_issue:
+        update['state'] = 'closed'
+
+    send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
+    print("Updated original issue with mapping from %s -> %s" %
+          (old_issue, issue_map[old_issue]))
+
+    if 'comments' in new_issue:
+        result_comments = import_comments(new_issue['comments'],
+                                          result_issue['number'])
+        print(" > Successfully added", len(result_comments), "comments.")
+
+    # Return value is currently used only for debugging
+    return result_issue
+
+
 # Will only import milestones and issues that are in use by the imported
 # issues, and do not exist in the target repository
 def import_issues(issues, issue_map):
@@ -705,10 +764,11 @@ def import_issues(issues, issue_map):
         repo = issue['repository']
 
         if issue['migrated']:
-            skipped_issues[repo, issue['number']] = issue
+            skipped_issues[old_issue] = issue
             continue
 
         new_issue = {}
+        new_issue['origin'] = old_issue
         new_issue['title'] = issue['title']
 
         # Temporary fix for marking closed issues
@@ -779,7 +839,7 @@ def import_issues(issues, issue_map):
         else:
             new_issue['body'] = issue['body']
 
-        new_issues.append((old_issue, new_issue))
+        new_issues.append(new_issue)
 
     state.current = state.IMPORT_CONFIRMATION
 
@@ -816,60 +876,10 @@ def import_issues(issues, issue_map):
     for label in new_labels:
         result_label = import_label(label)
 
-    result_issues = []
-    for old_issue, issue in new_issues:
-        if 'milestone_object' in issue:
-            issue['milestone'] = issue['milestone_object']['number']
-            del issue['milestone_object']
-
-        if 'label_objects' in issue:
-            issue_labels = []
-            for label in issue['label_objects']:
-                issue_labels.append(label['name'])
-            issue['labels'] = issue_labels
-            del issue['label_objects']
-
-        result_issue = send_request(target, "issues", issue)
-
-        source_repo, number = old_issue
-        close_issue = get_repository_option(source_repo, 'close-issues')
-
-        if close_issue:
-            close_message = '; the original issue will be closed'
-        else:
-            close_message = ''
-
-        print("Successfully created issue '%s'%s" % (result_issue['title'],
-                                                     close_message))
-
-        # Now update the original issue to mention the new issue.
-        update = {}
-
-        if get_repository_option(source_repo, 'create-backrefs'):
-            orig_issue = get_issue_by_id(source_repo, int(number))
-            message = (
-                '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
-                '(https://github.com/spacetelescope/github-issues-import)*' %
-                (target, result_issue['number']))
-            update['body'] = message + '\n\n' + orig_issue['body']
-
-        if close_issue:
-            update['state'] = 'closed'
-
-        send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
-        print("Updated original issue with mapping from %s -> %s" %
-              (old_issue, issue_map[old_issue]))
-
-        if 'comments' in issue:
-            result_comments = import_comments(issue['comments'],
-                                              result_issue['number'])
-            print(" > Successfully added", len(result_comments), "comments.")
-
-        result_issues.append(result_issue)
+    for new_issue in new_issues:
+        result_issue = import_new_issue(new_issue)
 
     state.current = state.IMPORT_COMPLETE
-
-    return result_issues
 
 
 def get_username(question):
