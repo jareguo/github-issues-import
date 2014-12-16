@@ -627,10 +627,11 @@ def import_label(source):
     return result_label
 
 
-def import_comments(comments, issue_number):
+def import_comments(orig_issue_id, comments, issue_number):
     result_comments = []
-    for comment in comments:
+    source_repo = orig_issue_id.repository
 
+    for comment in comments:
         template_data = {}
         template_data['user_name'] = comment['user']['login']
         template_data['user_url'] = comment['user']['html_url']
@@ -639,12 +640,26 @@ def import_comments(comments, issue_number):
         template_data['url'] =  comment['html_url']
         template_data['body'] = comment['body']
 
-        comment['body'] = format_comment(template_data)
+        new_comment = {'body': format_comment(template_data)}
 
         target = config['global']['target']
         result_comment = send_request(target, "issues/%s/comments" %
-                                      issue_number, comment)
+                                      issue_number, new_comment)
         result_comments.append(result_comment)
+
+        if get_repository_option(source_repo, 'create-backrefs'):
+            # Update the original comment to mark it as migrated, and link to
+            # the migrated comment
+
+            message = (
+                '*Migrated to [%s/#%s (comment)](%s) by '
+                '[spacetelescope/github-issues-import]'
+                '(https://github.com/spacetelescope/github-issues-import)*' %
+                (target, issue_number, result_comment['html_url']))
+
+            update = {'body': message + '\n\n' + comment['body']}
+            send_request(source_repo, 'issues/comments/%s' % comment['id'],
+                         update, 'PATCH')
 
     return result_comments
 
@@ -739,7 +754,7 @@ def import_new_issue(new_issue):
           (old_issue, result_issue_id))
 
     if 'comments' in new_issue:
-        result_comments = import_comments(new_issue['comments'],
+        result_comments = import_comments(old_issue, new_issue['comments'],
                                           result_issue['number'])
         print(" > Successfully added", len(result_comments), "comments.")
 
