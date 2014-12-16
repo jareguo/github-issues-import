@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict, namedtuple
 from datetime import datetime
 from string import Template
 
@@ -98,6 +98,16 @@ CONFIG_MAP = {
 BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels',
                     'import-assignee', 'create-backrefs', 'close-issues',
                     'normalize-labels'])
+
+class Issue(namedtuple('Issue', ('repository', 'number'))):
+    """
+    A namedtuple class representing a GitHub issue.  It has two fields: the
+    repository name (as full username/repo pair) and the issue number as an
+    int.
+    """
+
+    def __str__(self):
+        return '%s#%s' % self
 
 
 def init_config():
@@ -664,14 +674,14 @@ def fixup_cross_references(source_repo, issue, issue_map):
         repo = matchobj.group(1) or source_repo
         issue_num = int(matchobj.group(2))
 
-        issue = (repo, issue_num)
+        issue = Issue(repo, issue_num)
 
         if issue in issue_map:
             # Update to reference another issue being migrated to the target
             # repository
             return '#' + issue_map[issue][1]
         else:
-            return '#'.join(str(x) for x in issue)
+            return str(issue)
 
     issue['body'] = GH_ISSUE_REF_RE.sub(repl_issue_reference, issue['body'])
 
@@ -780,8 +790,6 @@ def import_issues(issues, issue_map):
         if old in skipped_issues:
             continue
 
-        old = '#'.join(str(x) for x in old)
-        new = '#'.join(str(x) for x in new)
         print("   *", old, "->", new)
 
     print(" *", num_new_comments, "new comments")
@@ -790,9 +798,10 @@ def import_issues(issues, issue_map):
 
     if skipped_issues:
         print(" *", "The following issues look like they have already been "
-                    "migrated to the target repository by this script:")
+                    "migrated to the target repository by this script and "
+                    "will not be migrated:")
         for key, issue in skipped_issues.items():
-            print ("   *", "%s#%s" % key)
+            print ("   *", key)
 
     if not yes_no("Are you sure you wish to continue?"):
         sys.exit()
@@ -849,7 +858,7 @@ def import_issues(issues, issue_map):
 
         send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
         print("Updated original issue with mapping from %s -> %s" %
-              ('#'.join(str(x) for x in old_issue), issue_map[old_issue]))
+              (old_issue, issue_map[old_issue]))
 
         if 'comments' in issue:
             result_comments = import_comments(issue['comments'],
@@ -938,14 +947,14 @@ if __name__ == '__main__':
         Determine if the issue looks like it has already been migrated by this
         script.
 
-        If the issue was migrated, it returns a ``(repository, issue_number)``
-        tuple of its migration destination; returns `False` otherwise.
+        If the issue was migrated, it returns an `Issue` object representing
+        its migration destination; returns `False` otherwise.
         """
 
         for line in issue['body'].splitlines():
             m = migrated_re.match(line)
             if m:
-                return (m.group(1), int(m.group(2)))
+                return Issue(m.group(1), int(m.group(2)))
 
         return False
 
@@ -965,11 +974,11 @@ if __name__ == '__main__':
     issue_map = OrderedDict()
     for issue in issues:
         migrated = issue['migrated'] = issue_was_migrated(issue)
-        old = (issue['repository'], issue['number'])
+        old = Issue(issue['repository'], issue['number'])
         if migrated:
             new = migrated
         else:
-            new = (target, new_issue_idx)
+            new = Issue(target, new_issue_idx)
             new_issue_idx += 1
 
         issue_map[old] = new
