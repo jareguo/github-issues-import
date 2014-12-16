@@ -30,8 +30,8 @@ ISO_8601_UTC = '%Y-%m-%dT%H:%M:%SZ'
 # comment text.  I can't find any documentation on GitHub as to what the
 # allowed characters are in repositories and usernames, but this seems like a
 # good-enough guess for now
-GH_ISSUE_REF_RE = re.compile(r'(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[1-9]\d*',
-                             flags=re.I)
+GH_ISSUE_REF_RE = re.compile(r'(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?)#'
+                             r'([1-9]\d*)', flags=re.I)
 
 # TODO: Do something useful with state management; my thought is to break this
 # into actual stages of the import process where each stage will be in its own
@@ -661,24 +661,24 @@ def fixup_cross_references(source_repo, issue, issue_map):
         reference to point to the newly migrated issue.
         """
 
-        reference = matchobj.group(0)
-        if reference[0] == '#':
-            # A 'bare' reference
-            reference = source_repo + reference
+        repo = matchobj.group(1) or source_repo
+        issue_num = int(matchobj.group(2))
 
-        if reference in issue_map:
+        issue = (repo, issue_num)
+
+        if issue in issue_map:
             # Update to reference another issue being migrated to the target
             # repository
-            reference = '#' + issue_map[reference].split('#')[1]
-
-        return reference
+            return '#' + issue_map[issue][1]
+        else:
+            return '#'.join(str(x) for x in issue)
 
     issue['body'] = GH_ISSUE_REF_RE.sub(repl_issue_reference, issue['body'])
 
 
 # Will only import milestones and issues that are in use by the imported
 # issues, and do not exist in the target repository
-def import_issues(issues, issue_map, skipped):
+def import_issues(issues, issue_map):
     state.current = state.GENERATING
 
     target = config['global']['target']
@@ -686,19 +686,24 @@ def import_issues(issues, issue_map, skipped):
     known_labels = get_labels(target)
 
     new_issues = []
+    skipped_issues = OrderedDict()
     num_new_comments = 0
     new_milestones = []
     new_labels = []
 
-    for issue, old_number in zip(issues, issue_map):
+    for issue, old_issue in zip(issues, issue_map):
+        repo = issue['repository']
+
+        if issue['migrated']:
+            skipped_issues[repo, issue['number']] = issue
+            continue
+
         new_issue = {}
         new_issue['title'] = issue['title']
 
         # Temporary fix for marking closed issues
         if issue['closed_at']:
             new_issue['title'] = "[CLOSED] " + new_issue['title']
-
-        repo = issue['repository']
 
         import_assignee = get_repository_option(repo, 'import-assignee')
         if import_assignee and issue.get('assignee'):
@@ -764,7 +769,7 @@ def import_issues(issues, issue_map, skipped):
         else:
             new_issue['body'] = issue['body']
 
-        new_issues.append((old_number, new_issue))
+        new_issues.append((old_issue, new_issue))
 
     state.current = state.IMPORT_CONFIRMATION
 
@@ -772,17 +777,22 @@ def import_issues(issues, issue_map, skipped):
     print(" *", len(new_issues), "new issues:")
 
     for old, new in issue_map.items():
+        if old in skipped_issues:
+            continue
+
+        old = '#'.join(str(x) for x in old)
+        new = '#'.join(str(x) for x in new)
         print("   *", old, "->", new)
 
     print(" *", num_new_comments, "new comments")
     print(" *", len(new_milestones), "new milestones")
     print(" *", len(new_labels), "new labels")
 
-    if skipped:
+    if skipped_issues:
         print(" *", "The following issues look like they have already been "
                     "migrated to the target repository by this script:")
-        for issue in skipped:
-            print ("   *", "%s#%s" % (issue['repository'], issue['number']))
+        for key, issue in skipped_issues.items():
+            print ("   *", "%s#%s" % key)
 
     if not yes_no("Are you sure you wish to continue?"):
         sys.exit()
@@ -798,7 +808,7 @@ def import_issues(issues, issue_map, skipped):
         result_label = import_label(label)
 
     result_issues = []
-    for old_number, issue in new_issues:
+    for old_issue, issue in new_issues:
         if 'milestone_object' in issue:
             issue['milestone'] = issue['milestone_object']['number']
             del issue['milestone_object']
@@ -812,7 +822,7 @@ def import_issues(issues, issue_map, skipped):
 
         result_issue = send_request(target, "issues", issue)
 
-        source_repo, number = old_number.split('#')
+        source_repo, number = old_issue
         close_issue = get_repository_option(source_repo, 'close-issues')
 
         if close_issue:
@@ -839,7 +849,7 @@ def import_issues(issues, issue_map, skipped):
 
         send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
         print("Updated original issue with mapping from %s -> %s" %
-              (old_number, issue_map[old_number]))
+              ('#'.join(str(x) for x in old_issue), issue_map[old_issue]))
 
         if 'comments' in issue:
             result_comments = import_comments(issue['comments'],
@@ -916,21 +926,28 @@ if __name__ == '__main__':
     target = config['global']['target']
 
     migrated_re = re.compile(
-            r'^\*Migrated to %s#\d+ by.*spacetelescope/github-issues-import' %
-            target)
-    skipped = []
+            r'^\*Migrated to (%s)#(\d+) by.*'
+            r'spacetelescope/github-issues-import' % target)
 
-    def filter_migrated(issue):
-        """Filter out issues that look like they have already been migrated."""
+    # Determine if any of the found issues have already been migrated and mark
+    # them if such.  Already migrated issues will be ignored unless the
+    # update-existing option is set.
+
+    def issue_was_migrated(issue):
+        """
+        Determine if the issue looks like it has already been migrated by this
+        script.
+
+        If the issue was migrated, it returns a ``(repository, issue_number)``
+        tuple of its migration destination; returns `False` otherwise.
+        """
 
         for line in issue['body'].splitlines():
-            if migrated_re.match(line):
-                skipped.append(issue)
-                return False
+            m = migrated_re.match(line)
+            if m:
+                return (m.group(1), int(m.group(2)))
 
-        return True
-
-    issues = list(filter(filter_migrated, issues))
+        return False
 
     # Get all issues in the target repository; obviously if issues are created
     # in the target repo before the script is finished running this list will
@@ -944,14 +961,21 @@ if __name__ == '__main__':
 
     # Create a map from issues in the source repositories to the issues they
     # will become in the new repository
+    new_issue_idx = len(target_issues) + 1
     issue_map = OrderedDict()
-    for idx, issue in enumerate(issues):
-        old = '%s#%s' % (issue['repository'], issue['number'])
-        new = '%s#%s' % (target, len(target_issues) + idx + 1)
+    for issue in issues:
+        migrated = issue['migrated'] = issue_was_migrated(issue)
+        old = (issue['repository'], issue['number'])
+        if migrated:
+            new = migrated
+        else:
+            new = (target, new_issue_idx)
+            new_issue_idx += 1
+
         issue_map[old] = new
 
     # Further states defined within the function
     # Finally, add these issues to the target repository
-    import_issues(issues, issue_map, skipped)
+    import_issues(issues, issue_map)
 
     state.current = state.COMPLETE
