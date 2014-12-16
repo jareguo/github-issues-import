@@ -762,61 +762,67 @@ def import_new_issue(new_issue):
     return result_issue
 
 
-def make_new_issue(orig_issue, issue, issue_map):
-    repo = issue['repository']
+def make_new_issue(orig_issue_id, orig_issue, issue_map):
+    """
+    Returns a dict representing a new issue to be inserted into the target
+    repository, based on the source issue specified by orig_issue_id/orig_issue
+    as loaded from the source repo.
+    """
+
+    repo = orig_issue['repository']
     new_issue = {}
-    new_issue['origin'] = orig_issue
-    new_issue['title'] = issue['title']
+    new_issue['origin'] = orig_issue_id
+    new_issue['title'] = orig_issue['title']
 
     # Temporary fix for marking closed issues
-    if issue['closed_at']:
+    if orig_issue['closed_at']:
         new_issue['title'] = "[CLOSED] " + new_issue['title']
 
     import_assignee = get_repository_option(repo, 'import-assignee')
-    if import_assignee and issue.get('assignee'):
-        new_issue['assignee'] = issue['assignee']['login']
+    if import_assignee and orig_issue.get('assignee'):
+        new_issue['assignee'] = orig_issue['assignee']['login']
 
-    num_comments = int(issue.get('comments', 0))
+    num_comments = int(orig_issue.get('comments', 0))
     if (get_repository_option(repo, 'import-comments') and
             num_comments != 0):
-        new_issue['comments'] = get_comments_on_issue(repo, issue)
+        new_issue['comments'] = get_comments_on_issue(repo, orig_issue)
 
     import_milestone = get_repository_option(repo, 'import-milestone')
-    if import_milestone and issue.get('milestone') is not None:
+    if import_milestone and orig_issue.get('milestone') is not None:
         # Since the milestones' ids are going to differ, we will compare
         # them by title instead
-        new_issue['milestone_object'] = issue['milestone']
+        new_issue['milestone_object'] = orig_issue['milestone']
 
     import_labels = get_repository_option(repo, 'import-labels')
     normalize_labels = get_repository_option(repo, 'normalize-labels')
-    if import_labels and issue.get('labels') is not None:
+    if import_labels and orig_issue.get('labels') is not None:
         new_issue['label_objects'] = []
-        for issue_label in issue['labels']:
+        for issue_label in orig_issue['labels']:
             if normalize_labels:
                 issue_label['name'] = \
                         normalize_label_name(issue_label['name'])
 
             new_issue['label_objects'].append(issue_label)
 
-    fixup_cross_references(repo, issue, issue_map)
+    fixup_cross_references(repo, orig_issue, issue_map)
 
     template_data = {}
-    template_data['user_name'] = issue['user']['login']
-    template_data['user_url'] = issue['user']['html_url']
-    template_data['user_avatar'] = issue['user']['avatar_url']
-    template_data['date'] = format_date(issue['created_at'])
-    template_data['url'] =  issue['html_url']
-    template_data['body'] = issue['body']
+    template_data['user_name'] = orig_issue['user']['login']
+    template_data['user_url'] = orig_issue['user']['html_url']
+    template_data['user_avatar'] = orig_issue['user']['avatar_url']
+    template_data['date'] = format_date(orig_issue['created_at'])
+    template_data['url'] =  orig_issue['html_url']
+    template_data['body'] = orig_issue['body']
     template_data['num_comments'] = num_comments
 
     if get_repository_option(repo, 'create-backrefs'):
-        if ("pull_request" in issue and
-                issue['pull_request']['html_url'] is not None):
+        if ("pull_request" in orig_issue and
+                orig_issue['pull_request']['html_url'] is not None):
             new_issue['body'] = format_pull_request(template_data)
         else:
             new_issue['body'] = format_issue(template_data)
     else:
-        new_issue['body'] = issue['body']
+        new_issue['body'] = orig_issue['body']
 
     return new_issue
 
