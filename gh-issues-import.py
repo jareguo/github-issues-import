@@ -110,7 +110,7 @@ class Issue(namedtuple('Issue', ('repository', 'number'))):
         return '%s#%s' % self
 
 
-def init_config():
+def init_config(argv):
     """
     Handle command-line and config file processing; returns a `dict` of
     configuration combined from the config file and command-line options,
@@ -218,7 +218,7 @@ def init_config():
 
     # First parse arguments that affect reading the config files; use this to
     # set various defaults and then parse the remaining options
-    conf_args, _ = conf_parser.parse_known_args()
+    conf_args, _ = conf_parser.parse_known_args(argv)
 
     # TODO: This could be simplified even more with smarter use of argparse,
     # but good enough for now; it's not terribly important that this be
@@ -271,7 +271,7 @@ def init_config():
 
     arg_parser.set_defaults(**config_defaults)
 
-    args = arg_parser.parse_args()
+    args = arg_parser.parse_args(argv)
 
     # Now load parsed args in to config dict; would be nice if there were a
     # better way to do this than to loop over CONFIG_MAP a second time.
@@ -918,11 +918,10 @@ def yes_no(question, default=True):
                              "(or 'y' or 'n').\n")
 
 
-if __name__ == '__main__':
-
+def main(argv):
     state.current = state.LOADING_CONFIG
 
-    init_config()
+    init_config(argv)
 
     state.current = state.FETCHING_ISSUES
 
@@ -998,3 +997,7 @@ if __name__ == '__main__':
     import_issues(issues, issue_map)
 
     state.current = state.COMPLETE
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
