@@ -692,11 +692,12 @@ def import_new_issue(new_issue):
     source issue.
     """
 
+    target = config['global']['target']
     old_issue = new_issue['origin']
 
     if 'milestone_object' in new_issue:
         new_issue['milestone'] = new_issue['milestone_object']['number']
-        del issue['milestone_object']
+        del new_issue['milestone_object']
 
     if 'label_objects' in new_issue:
         issue_labels = []
@@ -706,6 +707,7 @@ def import_new_issue(new_issue):
         del new_issue['label_objects']
 
     result_issue = send_request(target, "issues", new_issue)
+    result_issue_id = Issue(target, result_issue['number'])
 
     source_repo, number = old_issue
     close_issue = get_repository_option(source_repo, 'close-issues')
@@ -724,9 +726,9 @@ def import_new_issue(new_issue):
     if get_repository_option(source_repo, 'create-backrefs'):
         orig_issue = get_issue_by_id(source_repo, int(number))
         message = (
-            '*Migrated to %s#%s by [spacetelescope/github-issues-import]'
+            '*Migrated to %s by [spacetelescope/github-issues-import]'
             '(https://github.com/spacetelescope/github-issues-import)*' %
-            (target, result_issue['number']))
+            str(result_issue_id))
         update['body'] = message + '\n\n' + orig_issue['body']
 
     if close_issue:
@@ -734,7 +736,7 @@ def import_new_issue(new_issue):
 
     send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
     print("Updated original issue with mapping from %s -> %s" %
-          (old_issue, issue_map[old_issue]))
+          (old_issue, result_issue_id))
 
     if 'comments' in new_issue:
         result_comments = import_comments(new_issue['comments'],
@@ -743,6 +745,65 @@ def import_new_issue(new_issue):
 
     # Return value is currently used only for debugging
     return result_issue
+
+
+def make_new_issue(orig_issue, issue, issue_map):
+    repo = issue['repository']
+    new_issue = {}
+    new_issue['origin'] = orig_issue
+    new_issue['title'] = issue['title']
+
+    # Temporary fix for marking closed issues
+    if issue['closed_at']:
+        new_issue['title'] = "[CLOSED] " + new_issue['title']
+
+    import_assignee = get_repository_option(repo, 'import-assignee')
+    if import_assignee and issue.get('assignee'):
+        new_issue['assignee'] = issue['assignee']['login']
+
+    num_comments = int(issue.get('comments', 0))
+    if (get_repository_option(repo, 'import-comments') and
+            num_comments != 0):
+        new_issue['comments'] = get_comments_on_issue(repo, issue)
+
+    import_milestone = get_repository_option(repo, 'import-milestone')
+    if import_milestone and issue.get('milestone') is not None:
+        # Since the milestones' ids are going to differ, we will compare
+        # them by title instead
+        new_issue['milestone_object'] = issue['milestone']
+
+    import_labels = get_repository_option(repo, 'import-labels')
+    normalize_labels = get_repository_option(repo, 'normalize-labels')
+    if import_labels and issue.get('labels') is not None:
+        new_issue['label_objects'] = []
+        for issue_label in issue['labels']:
+            if normalize_labels:
+                issue_label['name'] = \
+                        normalize_label_name(issue_label['name'])
+
+            new_issue['label_objects'].append(issue_label)
+
+    fixup_cross_references(repo, issue, issue_map)
+
+    template_data = {}
+    template_data['user_name'] = issue['user']['login']
+    template_data['user_url'] = issue['user']['html_url']
+    template_data['user_avatar'] = issue['user']['avatar_url']
+    template_data['date'] = format_date(issue['created_at'])
+    template_data['url'] =  issue['html_url']
+    template_data['body'] = issue['body']
+    template_data['num_comments'] = num_comments
+
+    if get_repository_option(repo, 'create-backrefs'):
+        if ("pull_request" in issue and
+                issue['pull_request']['html_url'] is not None):
+            new_issue['body'] = format_pull_request(template_data)
+        else:
+            new_issue['body'] = format_issue(template_data)
+    else:
+        new_issue['body'] = issue['body']
+
+    return new_issue
 
 
 # Will only import milestones and issues that are in use by the imported
@@ -767,77 +828,26 @@ def import_issues(issues, issue_map):
             skipped_issues[old_issue] = issue
             continue
 
-        new_issue = {}
-        new_issue['origin'] = old_issue
-        new_issue['title'] = issue['title']
-
-        # Temporary fix for marking closed issues
-        if issue['closed_at']:
-            new_issue['title'] = "[CLOSED] " + new_issue['title']
-
-        import_assignee = get_repository_option(repo, 'import-assignee')
-        if import_assignee and issue.get('assignee'):
-            new_issue['assignee'] = issue['assignee']['login']
-
-        num_comments = int(issue.get('comments', 0))
-        if (get_repository_option(repo, 'import-comments') and
-                num_comments != 0):
-            num_new_comments += num_comments
-            new_issue['comments'] = get_comments_on_issue(repo, issue)
-
-        import_milestone = get_repository_option(repo, 'import-milestone')
-        if import_milestone and issue.get('milestone') is not None:
-            # Since the milestones' ids are going to differ, we will compare
-            # them by title instead
-            milestone_title = issue['milestone']['title']
-            found_milestone = known_milestones.get(milestone_title)
-            if found_milestone:
-                new_issue['milestone_object'] = found_milestone
+        new_issue = make_new_issue(old_issue, issue, issue_map)
+        num_new_comments += len(new_issue.get('comments', []))
+        # Find any new milestones or labels
+        milestone = new_issue.get('milestone_object')
+        if milestone:
+            known_milestone = known_milestones.get(milestone['title'])
+            if not known_milestone:
+                new_milestones.append(milestone)
+                known_milestones[milestone['title']] = milestone
             else:
-                new_milestone = issue['milestone']
-                new_issue['milestone_object'] = new_milestone
-                # Allow it to be found next time
-                known_milestones[new_milestone['title']] = new_milestone
-                # Put it in a queue to add it later
-                new_milestones.append(new_milestone)
+                new_issue['milestone_object'] = known_milestone
 
-        import_labels = get_repository_option(repo, 'import-labels')
-        normalize_labels = get_repository_option(repo, 'normalize-labels')
-        if import_labels and issue.get('labels') is not None:
-            new_issue['label_objects'] = []
-            for issue_label in issue['labels']:
-                if normalize_labels:
-                    issue_label['name'] = \
-                            normalize_label_name(issue_label['name'])
-                found_label = known_labels.get(issue_label['name'])
-                if found_label:
-                    new_issue['label_objects'].append(found_label)
-                else:
-                    new_issue['label_objects'].append(issue_label)
-                    # Allow it to be found next time
-                    known_labels[issue_label['name']] = issue_label
-                    # Put it in a queue to add it later
-                    new_labels.append(issue_label)
-
-        fixup_cross_references(repo, issue, issue_map)
-
-        template_data = {}
-        template_data['user_name'] = issue['user']['login']
-        template_data['user_url'] = issue['user']['html_url']
-        template_data['user_avatar'] = issue['user']['avatar_url']
-        template_data['date'] = format_date(issue['created_at'])
-        template_data['url'] =  issue['html_url']
-        template_data['body'] = issue['body']
-        template_data['num_comments'] = num_comments
-
-        if get_repository_option(repo, 'create-backrefs'):
-            if ("pull_request" in issue and
-                    issue['pull_request']['html_url'] is not None):
-                new_issue['body'] = format_pull_request(template_data)
+        labels = new_issue.get('label_objects', [])
+        for idx, label in enumerate(labels):
+            known_label = known_labels.get(label['name'])
+            if not known_label:
+                new_labels.append(label)
+                known_labels[label['name']] = label
             else:
-                new_issue['body'] = format_issue(template_data)
-        else:
-            new_issue['body'] = issue['body']
+                new_issue['label_objects'][idx] = known_label
 
         new_issues.append(new_issue)
 
