@@ -72,6 +72,7 @@ CONFIG_MAP = {
     'password': {'section': 'login', 'option': 'password'},
     'sources': {'section': 'global', 'option': 'sources', 'multiple': True},
     'target': {'section': 'global', 'option': 'target'},
+    'update_existing': {'section': 'global', 'option': 'update-existing'},
     'ignore_comments': {'section': 'global', 'option': 'import-comments',
                         'negate': True},
     'ignore_milestone': {'section': 'global', 'option': 'import-milestone',
@@ -97,7 +98,7 @@ CONFIG_MAP = {
 # can either be in the global section, or in per-repository sections
 BOOLEAN_OPTS = set(['import-comments',  'import-milestone', 'import-labels',
                     'import-assignee', 'create-backrefs', 'close-issues',
-                    'normalize-labels'])
+                    'normalize-labels', 'update-existing'])
 
 class Issue(namedtuple('Issue', ('repository', 'number'))):
     """
@@ -160,6 +161,15 @@ def init_config(argv):
             help="The destination repository which the issues should be "
                  "copied to. Should be in the format `user/repository`.")
 
+    arg_parser.add_argument('--update-existing', dest='update_existing',
+            action='store_true',
+            help='If any of the selected issues are found to have already '
+                 'been migrated from their sources to the target, rather '
+                 'than ignore them, update the migrated issue with any new '
+                 'changes to the original issue--in particular any comments '
+                 'that were not previously migrated (if not '
+                 '--ignore-comments)')
+
     arg_parser.add_argument('--ignore-comments', dest='ignore_comments',
             action='store_true', help="Do not import comments in the issue.")
 
@@ -211,6 +221,11 @@ def init_config(argv):
     include_group.add_argument('--closed', dest='import_issues',
             action='store_const', const='closed',
             help="Import only closed issues.")
+
+    include_group.add_argument('--migrated', dest='import_issues',
+            action='store_const', const='migrated',
+            help="Import only already migrated issues (use only in "
+                 "conjunction with --update-existing)")
 
     include_group.add_argument('-i', '--issues', dest='import_issues',
             type=int, nargs='+', help="The list of issues to import.");
@@ -765,6 +780,38 @@ def import_new_issue(new_issue, issue_map):
     return result_issue
 
 
+def import_updated_issue(orig_issue_id, issue_id, updates, issue_map):
+    """
+    Push updates to an existing issue, including any new comments.
+    """
+
+    comments = updates.pop('comments', [])
+
+    if 'milestone_object' in updates:
+        updates['milestone'] = updates['milestone_object']['number']
+
+    if 'new_labels' in updates:
+        issue_labels = []
+        for label in updates['label_objects']:
+            issue_labels.append(label['name'])
+        updates['labels'] = issue_labels
+        del updates['label_objects']
+        del updates['new_labels']
+
+    result_issue = send_request(issue_id.repository,
+                                'issues/%s' % issue_id.number, updates,
+                                'PATCH')
+
+    print(" > Successfully updated", issue_map[orig_issue_id])
+
+    if comments:
+        result_comments = import_comments(orig_issue_id, comments,
+                                          issue_id.number, issue_map)
+        print(" > Successfully added", len(result_comments), "new comments.")
+
+    return result_issue
+
+
 def make_new_issue(orig_issue_id, orig_issue, issue_map):
     """
     Returns a dict representing a new issue to be inserted into the target
@@ -831,6 +878,116 @@ def make_new_issue(orig_issue_id, orig_issue, issue_map):
     return new_issue
 
 
+# Note: This could also probably make use of the events API to determine
+# updates to the original issue, but directly comparing to the migrated issue
+# is just as easy, so...
+
+def make_updated_issue(orig_issue_id, orig_issue, issue_map):
+    """
+    Returns a dict containing updates to an issue that has already been
+    migrated once, determined by checking the original issue and seeing if
+    there are any new differences (including new comments on) the original
+    issue compared to the issue when it was first migrated.
+    """
+
+    target = config['global']['target']
+    repo = orig_issue_id.repository
+
+    migrated_issue_id = issue_map[orig_issue_id]
+    migrated_issue = get_issue_by_id(target, migrated_issue_id.number)
+
+    updated_issue = {}
+
+    if orig_issue['title'] != migrated_issue['title']:
+        updated_issue['title'] = orig_issue['title']
+
+    if get_repository_option(repo, 'import-assignee'):
+        orig_assignee = orig_issue.get('assignee') or {}
+        migrated_assignee = migrated_issue.get('assignee') or {}
+
+        if (orig_assignee.get('login') is not None and
+                orig_assignee.get('login') != migrated_assignee.get('login')):
+            updated_issue['assignee'] = orig_assignee['login']
+
+    if get_repository_option(repo, 'import-milestone'):
+        orig_milestone = orig_issue.get('milestone') or {}
+        migrated_milestone = migrated_issue.get('milestone') or {}
+
+        if (orig_milestone.get('title') is not None and
+                orig_milestone.get('title') != migrated_milestone.get('title')):
+            updated_issue['milestone_object'] = orig_milestone
+
+    normalize_labels = get_repository_option(repo, 'normalize-labels')
+    if get_repository_option(repo, 'import-labels'):
+        for issue_label in orig_issue['labels']:
+            if normalize_labels:
+                issue_label['name'] = \
+                        normalize_label_name(issue_label['name'])
+
+            # Note: We will update any new labels added to the original issue
+            # by copying them over the the migrated issue.  However, if any
+            # labels were later *deleted* from the original issue we do not
+            # transfer the deletions over, which could have unintended
+            # consequences
+            for label in migrated_issue.get('labels', []):
+                if normalize_labels:
+                    migrated_label_name = normalize_label_name(label['name'])
+                else:
+                    migrated_label_name = label['name']
+
+                if migrated_label_name == issue_label['name']:
+                    break
+            else:
+                # This label is newly applied to the issue since it was
+                # migrated
+                if 'new_labels' not in updated_issue:
+                    updated_issue['new_labels'] = []
+
+                updated_issue['new_labels'].append(issue_label['name'])
+
+            # We still want to keep all the existing labels in the list of
+            # labels on this issue; when updating labels on an issue via the
+            # API it does not perform a union or anything like that--it's all
+            # or nothing.
+            if 'label_objects' not in updated_issue:
+                updated_issue['label_objects'] = []
+
+            updated_issue['label_objects'].append(issue_label)
+
+        # If there are no *new* labels then there is no need to update the
+        # labels at all, so delete the label_objects list
+        if ('new_labels' not in updated_issue and
+                'label_objects' in updated_issue):
+            del updated_issue['label_objects']
+
+    migrated_re = re.compile(
+            r'^\*Migrated to \[(%s)#(\d+) \(comment\)\].* by.*'
+            r'spacetelescope/github-issues-import' % target)
+
+    def comment_was_migrated(comment):
+        for line in comment['body'].splitlines():
+            if migrated_re.match(line):
+                return True
+
+        return False
+
+    if get_repository_option(repo, 'import-comments'):
+        update_comments = []
+        orig_comments = get_comments_on_issue(repo, orig_issue)
+
+        # Note: This does *not* check for *edits* to comments that have already
+        # been migrated.  We could probably due it as well but there currently
+        # isn't any use case...
+        for comment in orig_comments:
+            if not comment_was_migrated(comment):
+                update_comments.append(comment)
+
+        if update_comments:
+            updated_issue['comments'] = update_comments
+
+    return updated_issue
+
+
 # Will only import milestones and issues that are in use by the imported
 # issues, and do not exist in the target repository
 def import_issues(issues, issue_map):
@@ -841,7 +998,9 @@ def import_issues(issues, issue_map):
     known_labels = get_labels(target)
 
     new_issues = []
+    updated_issues = OrderedDict()
     skipped_issues = OrderedDict()
+
     num_new_comments = 0
     new_milestones = []
     new_labels = []
@@ -850,31 +1009,35 @@ def import_issues(issues, issue_map):
         repo = issue['repository']
 
         if issue['migrated']:
-            skipped_issues[old_issue] = issue
-            continue
+            if get_repository_option(repo, 'update-existing'):
+                updated_issues[old_issue] = \
+                        make_updated_issue(old_issue, issue, issue_map)
+            else:
+                skipped_issues[old_issue] = issue
+                continue
+        else:
+            new_issues.append(make_new_issue(old_issue, issue, issue_map))
 
-        new_issue = make_new_issue(old_issue, issue, issue_map)
-        num_new_comments += len(new_issue.get('comments', []))
+    for issue in new_issues + list(updated_issues.values()):
+        num_new_comments += len(issue.get('comments', []))
         # Find any new milestones or labels
-        milestone = new_issue.get('milestone_object')
+        milestone = issue.get('milestone_object')
         if milestone:
             known_milestone = known_milestones.get(milestone['title'])
             if not known_milestone:
                 new_milestones.append(milestone)
                 known_milestones[milestone['title']] = milestone
             else:
-                new_issue['milestone_object'] = known_milestone
+                issue['milestone_object'] = known_milestone
 
-        labels = new_issue.get('label_objects', [])
+        labels = issue.get('label_objects', [])
         for idx, label in enumerate(labels):
             known_label = known_labels.get(label['name'])
             if not known_label:
                 new_labels.append(label)
                 known_labels[label['name']] = label
             else:
-                new_issue['label_objects'][idx] = known_label
-
-        new_issues.append(new_issue)
+                issue['label_objects'][idx] = known_label
 
     state.current = state.IMPORT_CONFIRMATION
 
@@ -882,7 +1045,7 @@ def import_issues(issues, issue_map):
     print(" *", len(new_issues), "new issues:")
 
     for old, new in issue_map.items():
-        if old in skipped_issues:
+        if old in skipped_issues or old in updated_issues:
             continue
 
         print("   *", old, "->", new)
@@ -890,6 +1053,29 @@ def import_issues(issues, issue_map):
     print(" *", num_new_comments, "new comments")
     print(" *", len(new_milestones), "new milestones")
     print(" *", len(new_labels), "new labels")
+
+    if updated_issues:
+        print("The following issues that were already migrated will be "
+              "updated:")
+        for orig_issue_id, updates in updated_issues.items():
+            if not updates:
+                continue
+
+            print(" *", orig_issue_id, "->", issue_map[orig_issue_id])
+            if 'title' in updates:
+                print("   * Title updated to:", updates['title'])
+            if 'assignee' in updates:
+                print("   * Assignee updated to:", updates['assignee'])
+            if 'milestone_object' in updates:
+                print("   * Milestone update to:",
+                      updates['milestone_object']['title'])
+            if 'new_labels' in updates:
+                print("   * The following new labels will be added:")
+                for label in updates['new_labels']:
+                    print("     *", label)
+            if 'comments' in updates:
+                print("   *", str(len(updates['comments'])),
+                      "new comments added")
 
     if skipped_issues:
         print(" *", "The following issues look like they have already been "
@@ -913,6 +1099,14 @@ def import_issues(issues, issue_map):
 
     for new_issue in new_issues:
         result_issue = import_new_issue(new_issue, issue_map)
+
+    for orig_issue_id, updated_issue in updated_issues.items():
+        if not updated_issue:
+            continue
+
+        result_issue = import_updated_issue(orig_issue_id,
+                                            issue_map[orig_issue_id],
+                                            updated_issue, issue_map)
 
     state.current = state.IMPORT_COMPLETE
 
@@ -958,24 +1152,6 @@ def main(argv):
 
     init_config(argv)
 
-    state.current = state.FETCHING_ISSUES
-
-    # Argparser will prevent us from getting both issue ids and specifying
-    # issue state, so no duplicates will be added
-    issues = []
-    for repo in config['global']['sources']:
-        issues_to_import = get_repository_option(repo, 'import-issues')
-
-        if (len(issues_to_import) == 1 and
-                issues_to_import[0] in ('all', 'open', 'closed')):
-            issues += get_issues(repo, state=issues_to_import[0])
-        else:
-            issues += get_issues_by_id(repo, issues_to_import)
-
-    # Sort issues from all repositories chronologically
-    issues.sort(key=lambda i: datetime.strptime(i['created_at'],
-                                                ISO_8601_UTC))
-
     target = config['global']['target']
 
     migrated_re = re.compile(
@@ -1001,6 +1177,27 @@ def main(argv):
                 return Issue(m.group(1), int(m.group(2)))
 
         return False
+
+    state.current = state.FETCHING_ISSUES
+    # Argparser will prevent us from getting both issue ids and specifying
+    # issue state, so no duplicates will be added
+    issues = []
+    for repo in config['global']['sources']:
+        issues_to_import = get_repository_option(repo, 'import-issues')
+
+        if (len(issues_to_import) == 1 and
+                issues_to_import[0] in ('all', 'open', 'closed')):
+            issues += get_issues(repo, state=issues_to_import[0])
+        elif len(issues_to_import) == 1 and issues_to_import[0] == 'migrated':
+            for issue in get_issues(repo):
+                if issue_was_migrated(issue):
+                    issues.append(issue)
+        else:
+            issues += get_issues_by_id(repo, issues_to_import)
+
+    # Sort issues from all repositories chronologically
+    issues.sort(key=lambda i: datetime.strptime(i['created_at'],
+                                                ISO_8601_UTC))
 
     # Get all issues in the target repository; obviously if issues are created
     # in the target repo before the script is finished running this list will
