@@ -587,7 +587,7 @@ def get_issues(repo, state=None):
     page = 1
     while True:
         query_args = {'direction': 'asc', 'page': page}
-        if state in ('open', 'closed'):
+        if state in ('open', 'closed', 'all'):
             query_args['state'] = state
 
         # TODO: Consider building this into send_request in the form of
@@ -1189,7 +1189,7 @@ def main(argv):
                 issues_to_import[0] in ('all', 'open', 'closed')):
             issues += get_issues(repo, state=issues_to_import[0])
         elif len(issues_to_import) == 1 and issues_to_import[0] == 'migrated':
-            for issue in get_issues(repo):
+            for issue in get_issues(repo, state='all'):
                 if issue_was_migrated(issue):
                     issues.append(issue)
         else:
