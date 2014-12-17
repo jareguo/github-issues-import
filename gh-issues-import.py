@@ -654,7 +654,7 @@ def import_comments(orig_issue_id, comments, issue_number, issue_map):
             # the migrated comment
 
             message = (
-                '*Migrated to [%s/#%s (comment)](%s) by '
+                '*Migrated to [%s#%s (comment)](%s) by '
                 '[spacetelescope/github-issues-import]'
                 '(https://github.com/spacetelescope/github-issues-import)*' %
                 (target, issue_number, result_comment['html_url']))
