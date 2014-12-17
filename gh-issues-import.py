@@ -1195,9 +1195,16 @@ def main(argv):
         else:
             issues += get_issues_by_id(repo, issues_to_import)
 
-    # Sort issues from all repositories chronologically
-    issues.sort(key=lambda i: datetime.strptime(i['created_at'],
-                                                ISO_8601_UTC))
+    # Sort issues from all repositories
+    def sort_key(issue):
+        # Sort chronologically first, then if there there is an overlap there
+        # (the API only offers second-level resolution) sort also by issue
+        # number so that issues created in the same second in the same
+        # repository should still be inserted in the correct order)
+        created = datetime.strptime(issue['created_at'], ISO_8601_UTC)
+        return (created, issue['number'])
+
+    issues.sort(key=sort_key)
 
     # Get all issues in the target repository; obviously if issues are created
     # in the target repo before the script is finished running this list will
