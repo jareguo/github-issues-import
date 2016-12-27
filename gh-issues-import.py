@@ -551,9 +551,17 @@ def get_labels(repo):
 	specified in the configuration, this also normalizes all label names and
 	ignores their original spellings.
 	"""
+	page = 1
+	labels = []
+	while True:
+		next_labels = send_request(which, "labels?page=%s" % page)
+		if next_labels:
+			labels.extend(next_labels)
+			page += 1
+		else:
+			break
 
 	normalize = get_repository_option(repo, 'normalize-labels')
-	labels = send_request(repo, "labels")
 	labels_dict = OrderedDict()
 	for label in labels:
 		if normalize:
@@ -642,7 +650,7 @@ def import_label(source):
 		"name": source['name'],
 		"color": source['color']
 	}
-
+	
 	target = config['global']['target']
 	result_label = send_request(target, "labels", source)
 	print("Successfully created label '%s'" % result_label['name'])
