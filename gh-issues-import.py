@@ -586,6 +586,7 @@ def get_issues(repo, state=None):
 
     issues = []
     page = 1
+    print("Fetching issues in state=%s" % state, end='', flush=True)
     while True:
         query_args = {'direction': 'asc', 'page': page}
         if state in ('open', 'closed', 'all'):
@@ -604,7 +605,10 @@ def get_issues(repo, state=None):
             issue['repository'] = repo
 
         issues.extend(new_issues)
+        print('.', end='', flush=True)
         page += 1
+
+    print('', flush=True)
     return issues
 
 
@@ -682,6 +686,7 @@ def import_comments(orig_issue_id, comments, issue_number, issue_map):
             send_request(source_repo, 'issues/comments/%s' % comment['id'],
                          update, 'PATCH')
 
+    print('', flush=True)
     return result_comments
 
 
@@ -772,7 +777,7 @@ def import_new_issue(new_issue, issue_map):
         update['state'] = 'closed'
 
     send_request(source_repo, 'issues/%s' % number, update, 'PATCH')
-    print("Updated original issue with mapping from %s -> %s" %
+    print("> Updated original issue with mapping from %s -> %s" %
           (old_issue, result_issue_id))
 
     if 'comments' in new_issue:
@@ -1003,6 +1008,8 @@ def make_updated_issue(orig_issue_id, orig_issue, issue_map):
 # issues, and do not exist in the target repository
 def import_issues(issues, issue_map):
     state.current = state.GENERATING
+
+    print("Preparing import for %d issues" % len(issues))
 
     target = config['global']['target']
     known_milestones = get_milestones(target)
