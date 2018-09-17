@@ -780,6 +780,11 @@ def import_new_issue(new_issue, issue_map):
                                           result_issue['number'], issue_map)
         print(" > Successfully added", len(result_comments), "comments.")
 
+    if new_issue['state'] == 'closed':
+        closed_issue = {'state': 'closed'}
+        result_issue = send_request(target, "issues/%s" % result_issue['number'], closed_issue, method='PATCH')
+        print("> Closed imported issue")
+
     # Return value is currently used only for debugging
     return result_issue
 
@@ -830,7 +835,9 @@ def make_new_issue(orig_issue_id, orig_issue, issue_map):
 
     # Temporary fix for marking closed issues
     if orig_issue['closed_at']:
-        new_issue['title'] = "[CLOSED] " + new_issue['title']
+        new_issue['state'] = 'closed'
+    else:
+        new_issue['state'] = 'open'
 
     import_assignee = get_repository_option(repo, 'import-assignee')
     if import_assignee and orig_issue.get('assignee'):
@@ -1103,6 +1110,8 @@ def import_issues(issues, issue_map):
 
     for new_issue in new_issues:
         result_issue = import_new_issue(new_issue, issue_map)
+        # delay to prevent abuse rate limit
+        time.sleep(1)
 
     for orig_issue_id, updated_issue in updated_issues.items():
         if not updated_issue:
@@ -1111,6 +1120,8 @@ def import_issues(issues, issue_map):
         result_issue = import_updated_issue(orig_issue_id,
                                             issue_map[orig_issue_id],
                                             updated_issue, issue_map)
+        # delay to prevent abuse rate limit
+        time.sleep(1)
 
     state.current = state.IMPORT_COMPLETE
 
