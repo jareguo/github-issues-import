@@ -759,8 +759,8 @@ def import_new_issue(new_issue, issue_map):
     if get_repository_option(source_repo, 'create-backrefs'):
         orig_issue = get_issue_by_id(source_repo, int(number))
         message = (
-            '*Migrated to %s by [spacetelescope/github-issues-import]'
-            '(https://github.com/spacetelescope/github-issues-import)*' %
+            'Migrated to %s by [issues-import]'
+            '(https://github.com/jareguo/github-issues-import)\n----' %
             str(result_issue_id))
         update['body'] = message + '\n\n' + orig_issue['body']
 
@@ -1155,8 +1155,7 @@ def main(argv):
     target = config['global']['target']
 
     migrated_re = re.compile(
-            r'^\*Migrated to (%s)#(\d+) by.*'
-            r'spacetelescope/github-issues-import' % target)
+            r'^Migrated to (%s)#(\d+) by \[.*\]' % target)
 
     # Determine if any of the found issues have already been migrated and mark
     # them if such.  Already migrated issues will be ignored unless the
