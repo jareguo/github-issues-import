@@ -586,7 +586,7 @@ def get_issues(repo, state=None):
 
     issues = []
     page = 1
-    print("Fetching issues in state=%s" % state, end='', flush=True)
+    print("Fetching issues from %s in state=%s" % (repo, state), end='', flush=True)
     while True:
         query_args = {'direction': 'asc', 'page': page}
         if state in ('open', 'closed', 'all'):
@@ -1232,7 +1232,7 @@ def main(argv):
     # be inaccurate; later we will warn the user to lock down the target (and
     # source) repos before merging in order to prevent this
     # TODO: I wonder if this lockdown could actually be done via the API?
-    target_issues = get_issues(target)
+    target_issues = get_issues(target, state='all')
     # Annoyingly, the GitHub API does not have a way to ask for a simple count
     # of issues; instead we have to download all the issues in full in order to
     # count them
@@ -1241,6 +1241,10 @@ def main(argv):
     # will become in the new repository
     new_issue_idx = len(target_issues) + 1
     issue_map = OrderedDict()
+
+    # Skip all pull requests
+    issues = [issue for issue in issues if 'pull_request' not in issue]
+
     for issue in issues:
         migrated = issue['migrated'] = issue_was_migrated(issue)
         old = Issue(issue['repository'], issue['number'])
