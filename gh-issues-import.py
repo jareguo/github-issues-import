@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+import time
 import configparser
 import getpass
 import json
@@ -663,6 +664,9 @@ def import_comments(orig_issue_id, comments, issue_number, issue_map):
         result_comment = send_request(target, "issues/%s/comments" %
                                       issue_number, new_comment)
         result_comments.append(result_comment)
+        # we need a delay to prevent abuse rate limit
+        time.sleep(1)
+        print('.', end='', flush=True)
 
         if get_repository_option(source_repo, 'create-backrefs'):
             # Update the original comment to mark it as migrated, and link to
