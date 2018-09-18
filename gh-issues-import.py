@@ -701,8 +701,8 @@ def import_comments(orig_issue_id, comments, issue_number, issue_map):
 
 			message = (
 				'*Migrated to [%s#%s (comment)](%s) by '
-				'[spacetelescope/github-issues-import]'
-				'(https://github.com/spacetelescope/github-issues-import)*' %
+				'[issues-import]'
+				'(https://github.com/jareguo/github-issues-import)*' %
 				(target, issue_number, result_comment['html_url']))
 
 			update = {'body': message + '\n\n' + comment['body']}
@@ -1001,7 +1001,7 @@ def make_updated_issue(orig_issue_id, orig_issue, issue_map):
 
 	migrated_re = re.compile(
 			r'^\*Migrated to \[(%s)#(\d+) \(comment\)\].* by.*'
-			r'spacetelescope/github-issues-import' % target)
+			r'jareguo/github-issues-import' % target)
 
 	def comment_was_migrated(comment):
 		for line in comment['body'].splitlines():
