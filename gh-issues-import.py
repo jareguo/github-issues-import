@@ -695,7 +695,7 @@ def import_comments(orig_issue_id, comments, issue_number, issue_map):
 		time.sleep(1)
 		print('.', end='', flush=True)
 
-		if get_repository_option(source_repo, 'create-backrefs'):
+		if False and get_repository_option(source_repo, 'create-backrefs'):
 			# Update the original comment to mark it as migrated, and link to
 			# the migrated comment
 
