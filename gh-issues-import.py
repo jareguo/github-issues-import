@@ -63,8 +63,6 @@ HTTP_ERROR_MESSAGES = {
 		 "If either repository is private, make sure the specified user is "
 		 "allowed access to it."
 }
-# Basically the same problem. GitHub returns 403 instead to prevent abuse.
-HTTP_ERROR_MESSAGES[403] = HTTP_ERROR_MESSAGES[401]
 
 
 # Maps command-line options to their associated config file options (if any)
@@ -553,6 +551,8 @@ def get_milestones(repo):
 	"""
 
 	milestones = send_request(repo, "milestones?state=open")
+	closedMilestones = send_request(repo, "milestones?state=closed")
+	milestones.extend(closedMilestones)
 	return OrderedDict((m['title'], m) for m in milestones)
 
 
@@ -647,13 +647,13 @@ def get_comments_on_issue(repo, issue):
 def import_milestone(source):
 	data = {
 		"title": source['title'],
-		"state": "open",
+		"state": source['state'],
 		"description": source['description'],
 		"due_on": source['due_on']
 	}
 
 	target = config['global']['target']
-	result_milestone = send_request(target, "milestones", source)
+	result_milestone = send_request(target, "milestones", data)
 	print("Successfully created milestone '%s'" % result_milestone['title'])
 	return result_milestone
 
