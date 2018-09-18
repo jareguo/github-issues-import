@@ -518,22 +518,30 @@ def send_request(repo, url, post_data=None, method=None):
 			json_data = response.read()
 		except urllib.error.HTTPError as error:
 
-			error_details = error.read()
-			error_details = json.loads(error_details.decode("utf-8"))
+			def getErrorDetails(error):
+				error_details = error.read()
+				error_details = json.loads(error_details.decode("utf-8"))
+				message = "CODE: %s\nREASON: %s" % (error.code, error.reason)
+				if 'message' in error_details:
+					message += "\nDETAILS: " + error_details['message']
+				if 'errors' in error_details:
+					message += "\n         " + str(error_details['errors'])
+				return message
 
-			if error.code in HTTP_ERROR_MESSAGES:
+			if error.code == 403:
+				print("Got 403, assuming rate limit error and waiting for 1 minute...")
+				print(getErrorDetails(error));
+				time.sleep(60)
+				retry = True
+			elif error.code in HTTP_ERROR_MESSAGES:
 				sys.exit(HTTP_ERROR_MESSAGES[error.code])
 			else:
-				error_message = ("ERROR: There was a problem importing the "
-								 "issues.\n%s %s" % (error.code, error.reason))
-				if 'message' in error_details:
-					error_message += "\nDETAILS: " + error_details['message']
-				if 'errors' in error_details:
-					error_message += "\n" + str(error_details['errors'])
+				error_message = "ERROR: There was a problem importing the issues.\n"
+				error_message += getErrorDetails(error)
 				sys.exit(error_message)
 		except urllib.error.URLError as error:
 			retry = True
-			
+
 	return json.loads(json_data.decode("utf-8"))
 
 
@@ -559,7 +567,7 @@ def get_labels(repo):
 	page = 1
 	labels = []
 	while True:
-		next_labels = send_request(which, "labels?page=%s" % page)
+		next_labels = send_request(repo, "labels?page=%s" % page)
 		if next_labels:
 			labels.extend(next_labels)
 			page += 1
