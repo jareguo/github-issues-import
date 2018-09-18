@@ -515,11 +515,11 @@ def send_request(repo, url, post_data=None, method=None):
 			response = urllib.request.urlopen(req)
 			json_data = response.read()
 		except urllib.error.HTTPError as error:
+			error_details = json.loads(error.read().decode("utf-8"))
 
 			def getErrorDetails(error):
-				error_details = error.read()
-				error_details = json.loads(error_details.decode("utf-8"))
 				message = "CODE: %s\nREASON: %s" % (error.code, error.reason)
+				message += "\nREQUEST: %s %s" % (url, post_data)
 				if 'message' in error_details:
 					message += "\nDETAILS: " + error_details['message']
 				if 'errors' in error_details:
@@ -605,7 +605,8 @@ def get_issues(repo, state=None):
 	Get all issues from repository.
 
 	Optionally, only retrieve issues of in the specified state ('open' or
-	'closed')."""
+	'closed').
+	"""
 
 	issues = []
 	page = 1
